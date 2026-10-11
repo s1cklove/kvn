@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+result
+result-*
+.venv/
+# never commit a subscription
+sub_url
