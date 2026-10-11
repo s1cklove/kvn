@@ -1,0 +1,41 @@
+import os
+import re
+import subprocess
+
+from .settings import RULES_DIR, SING_BOX
+
+
+def build_config(settings, servers, secret):
+    exclude = re.compile(settings["exclude"]) if settings["exclude"] else None
+    chosen = [s for s in servers if not (exclude and exclude.search(s["tag"]))] or servers
+
+    rules = [{"action": "sniff"}, {"ip_is_private": True, "outbound": "direct"}]
+    rule_sets = []
+    if settings["bypass_russia"]:
+        rules.append({"domain_suffix": ["ru", "su", "xn--p1ai"], "outbound": "direct"})
+        for tag in settings["rulesets"]:
+            path = os.path.join(RULES_DIR, tag + ".srs")
+            if os.path.exists(path):
+                rule_sets.append({"type": "local", "tag": tag, "format": "binary", "path": path})
+        if rule_sets:
+            rules.append({"rule_set": [r["tag"] for r in rule_sets], "outbound": "direct"})
+
+    return {
+        "log": {"level": "warn", "timestamp": False},
+        "inbounds": [{"type": "mixed", "tag": "mixed-in",
+                      "listen": settings["listen"], "listen_port": settings["port"]}],
+        "outbounds": [
+            {"type": "urltest", "tag": "auto", "outbounds": [s["tag"] for s in chosen],
+             "url": settings["test_url"], "interval": settings["urltest_interval"],
+             "tolerance": settings["tolerance"], "interrupt_exist_connections": True},
+            *chosen,
+            {"type": "direct", "tag": "direct"},
+        ],
+        "route": {"rules": rules, "rule_set": rule_sets, "final": "auto"},
+        "experimental": {"clash_api": {"external_controller": settings["clash_api"], "secret": secret}},
+    }
+
+
+def check_config(path):
+    r = subprocess.run([SING_BOX, "check", "-c", path], capture_output=True, text=True)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()
