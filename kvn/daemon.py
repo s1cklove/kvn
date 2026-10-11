@@ -55,7 +55,7 @@ class Watchdog:
     def start_box(self):
         if not self.port_free():
             if not self.box_error_notified:
-                notify("VPN не запущен", f"Порт {self.s['port']} занят — запущен другой агрегатор VPN.",
+                notify("Proxy port is busy", f"Port {self.s['port']} is taken, probably by another VPN client. Stop it and run: kvn restart",
                        "critical", "network-vpn-disconnected")
                 self.box_error_notified = True
             return False
@@ -99,7 +99,7 @@ class Watchdog:
         if not ok:
             os.unlink(tmp)
             log.error("generated config rejected by sing-box: %s", err)
-            notify("Конфиг не прошёл проверку", err[:300], "critical", "dialog-error")
+            notify("Generated config rejected by sing-box", err[:300], "critical", "dialog-error")
             return False
         os.replace(tmp, BOX_CONFIG)
         self.stop_box()
@@ -138,7 +138,7 @@ class Watchdog:
         save_servers(servers, via, subscription_expiry(headers))
         log.info("subscription updated via %s: %d servers (+%d -%d)", via, len(servers), len(added), len(removed))
         if old_tags and (added or removed):
-            notify("Подписка обновилась", f"{len(servers)} серверов: +{len(added)} / −{len(removed)}", "low")
+            notify("Server list updated", f"{len(servers)} servers: {len(added)} added, {len(removed)} removed", "low")
         return True
 
     def check_expiry(self, headers):
@@ -149,8 +149,8 @@ class Watchdog:
         today = time.strftime("%F")
         if left < self.s["expire_warn_days"] and self.expire_warned_day != today:
             self.expire_warned_day = today
-            notify("Подписка BlancVPN скоро кончится",
-                   f"Осталось {max(left, 0):.1f} дн. (до {time.strftime('%d.%m %H:%M', time.localtime(exp))})",
+            notify("Subscription expires soon",
+                   f"{max(left, 0):.1f} days left, until {time.strftime('%b %d, %H:%M', time.localtime(exp))}. Renew it to keep the VPN working.",
                    "critical", "dialog-warning")
 
     def refresh_rulesets(self):
@@ -175,10 +175,10 @@ class Watchdog:
 
     def describe(self, tag):
         if not tag:
-            return "ещё выбирается"
+            return "still choosing"
         try:
             d = self.clash.last_delay(tag)
-            return f"{tag} — {d} мс" if d else tag
+            return f"{tag} ({d} ms)" if d else tag
         except OSError:
             return tag
 
@@ -195,11 +195,11 @@ class Watchdog:
             return
         if prev == "down":
             mins = (time.time() - self.down_since) / 60
-            notify("Живём", f"Сервер: {self.describe(now)}\nЛежало {mins:.0f} мин{extra}", "normal", "network-vpn")
+            notify("Connection restored", f"Server: {self.describe(now)}\nWas down for {mins:.0f} min{extra}", "normal", "network-vpn")
         elif prev == "init":
-            notify("VPN поднят", f"Сервер: {self.describe(now)}", "low", "network-vpn")
+            notify("Connected", f"Server: {self.describe(now)}", "low", "network-vpn")
         elif now and self.current and now != self.current and self.s["notify_switch"]:
-            notify("Сменил сервер", f"{self.current} → {self.describe(now)}", "low", "network-vpn")
+            notify("Switched server", f"{self.current} → {self.describe(now)}", "low", "network-vpn")
         self.current = now
 
     def recover(self):
@@ -216,11 +216,11 @@ class Watchdog:
         if not alive:
             if time.time() - self.last_dead_notice > 900:
                 self.last_dead_notice = time.time()
-                notify("Все серверы лежат", f"0 из {total} отвечают. Пробую снова каждые "
-                       f"{self.s['recover_backoff'] // 60} мин.", "critical", "network-vpn-disconnected")
+                notify("No server is reachable", f"0 of {total} servers answer. Retrying every "
+                       f"{self.s['recover_backoff'] // 60} min; if it lasts, run: kvn fetch", "critical", "network-vpn-disconnected")
             return
         if probe(self.s["probe_urls"], self.proxy):
-            self.handle_up(f"\nЖивых {len(alive)}/{total}, лучшие: {top_list(alive)}")
+            self.handle_up(f"\nAlive: {len(alive)} of {total}. Fastest: {top_list(alive)}")
 
     def group_members(self):
         try:
@@ -245,10 +245,10 @@ class Watchdog:
                 self.state = "offline"
             return
         if self.state != "down":
-            what = f"VPN отвалился (сервер: {self.current})" if self.current else "VPN не поднимается"
+            what = f"Server {self.current} stopped responding" if self.current else "Could not connect to any server"
             self.state = "down"
             self.down_since = time.time()
-            notify("Пришла пизда!", f"{what}. Обновляю подписку и ищу живой сервер…",
+            notify("Connection lost", f"{what}. Refreshing the server list and looking for a working one…",
                    "critical", "network-vpn-disconnected")
             self.recover()
         elif time.time() - self.last_recover >= self.s["recover_backoff"]:
@@ -274,7 +274,7 @@ class Watchdog:
         while not self.stop and not self.servers:
             self.refresh_subscription()
             if not self.servers:
-                notify("Не могу скачать подписку", "Серверов в кэше нет, пробую снова через минуту",
+                notify("Can't download the subscription", "No saved servers to fall back on. Retrying in a minute.",
                        "critical", "network-vpn-disconnected")
                 self.wake.wait(60)
         self.next_sub = time.time() + self.s["sub_interval"]
@@ -285,7 +285,7 @@ class Watchdog:
             if self.box is None or self.box.poll() is not None:
                 if self.box is not None:
                     log.error("sing-box exited with %s, restarting", self.box.returncode)
-                    notify("sing-box упал", "Перезапускаю", "normal", "dialog-warning")
+                    notify("sing-box crashed", "Restarting it", "normal", "dialog-warning")
                 if not self.start_box():
                     self.wake.wait(60)
                     self.wake.clear()

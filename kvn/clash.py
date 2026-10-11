@@ -51,4 +51,4 @@ class Clash:
 
 def top_list(delays, n=3):
     best = sorted(delays.items(), key=lambda kv: kv[1])[:n]
-    return ", ".join(f"{k} {v} мс" for k, v in best)
+    return ", ".join(f"{k} ({v} ms)" for k, v in best)
