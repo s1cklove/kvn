@@ -10,7 +10,7 @@ import time
 from .clash import Clash, top_list
 from .net import probe
 from .notify import notify
-from .settings import BOX_CONFIG, PID_FILE, RULES_DIR, SERVERS_FILE, SING_BOX, STATE_DIR, get_secret, write_atomic
+from .settings import BOX_CONFIG, PID_FILE, RULES_DIR, SERVERS_FILE, SING_BOX, STATE_DIR, get_secret, save_servers, write_atomic
 from .singbox import build_config, check_config
 from .net import http_get
 from .subscription import fetch_subscription, servers_digest, subscription_expiry
@@ -39,6 +39,7 @@ class Watchdog:
         self.wake = threading.Event()
         self.stop = False
         self.force_update = False
+        self.reload = False
 
     # -- sing-box process
 
@@ -134,7 +135,7 @@ class Watchdog:
         new_tags = {s["tag"] for s in servers}
         added, removed = new_tags - old_tags, old_tags - new_tags
         self.servers = servers
-        write_atomic(SERVERS_FILE, json.dumps(servers, ensure_ascii=False))
+        save_servers(servers, via, subscription_expiry(headers))
         log.info("subscription updated via %s: %d servers (+%d -%d)", via, len(servers), len(added), len(removed))
         if old_tags and (added or removed):
             notify("Подписка обновилась", f"{len(servers)} серверов: +{len(added)} / −{len(removed)}", "low")
@@ -267,6 +268,7 @@ class Watchdog:
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, self.on_stop)
         signal.signal(signal.SIGUSR1, self.on_usr1)
+        signal.signal(signal.SIGHUP, self.on_hup)
 
         self.load_cached_servers()
         while not self.stop and not self.servers:
@@ -290,7 +292,15 @@ class Watchdog:
                     continue
 
             now = time.time()
-            if self.force_update:
+            if self.reload:
+                # `kvn fetch` saved a fresh server list; pick it up and re-test right away.
+                self.reload = False
+                log.info("reloading servers fetched by the CLI")
+                self.load_cached_servers()
+                self.next_sub = now + self.s["sub_interval"]
+                self.apply_config()
+                self.recover()
+            elif self.force_update:
                 self.force_update = False
                 log.info("manual update requested")
                 self.next_sub = now + self.s["sub_interval"]
@@ -320,6 +330,10 @@ class Watchdog:
 
     def on_stop(self, *_):
         self.stop = True
+        self.wake.set()
+
+    def on_hup(self, *_):
+        self.reload = True
         self.wake.set()
 
     def on_usr1(self, *_):

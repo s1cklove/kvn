@@ -9,6 +9,7 @@ Files:
 import json
 import os
 import secrets
+import time
 
 DEFAULTS = {
     "listen": "127.0.0.1",
@@ -48,6 +49,8 @@ STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/
 RUN_DIR = os.environ.get("XDG_RUNTIME_DIR", STATE_DIR)
 SUB_URL_FILE = os.path.join(CONF_DIR, "sub_url")
 SERVERS_FILE = os.path.join(STATE_DIR, "servers.json")
+#: when / how the subscription was last fetched and when it expires (for `kvn status`)
+SUB_META_FILE = os.path.join(STATE_DIR, "subscription.json")
 BOX_CONFIG = os.path.join(STATE_DIR, "config.json")
 SECRET_FILE = os.path.join(STATE_DIR, "clash_secret")
 RULES_DIR = os.path.join(STATE_DIR, "rules")
@@ -70,6 +73,19 @@ def write_atomic(path, data, mode=0o600):
         f.write(data if isinstance(data, bytes) else data.encode())
     os.chmod(tmp, mode)
     os.replace(tmp, path)
+
+
+def save_servers(servers, via, expire):
+    write_atomic(SERVERS_FILE, json.dumps(servers, ensure_ascii=False))
+    write_atomic(SUB_META_FILE, json.dumps({"fetched_at": int(time.time()), "via": via, "expire": expire, "count": len(servers)}))
+
+
+def load_sub_meta():
+    try:
+        with open(SUB_META_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def get_secret():
