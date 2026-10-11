@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kvn"
+dynamic = ["version"]
+description = "Keeps a sing-box proxy on a BlancVPN subscription alive: auto-failover, subscription refresh, desktop notifications"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+classifiers = [
+  "Environment :: No Input/Output (Daemon)",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Internet :: Proxy Servers",
+]
+
+[project.scripts]
+kvn = "kvn.cli:main"
+
+[tool.setuptools]
+packages = ["kvn"]
+
+[tool.setuptools.dynamic]
+version = { attr = "kvn.__version__" }
