@@ -36,7 +36,7 @@ It exposes a plain HTTP/SOCKS5 proxy on `127.0.0.1:10808`; point your browser /
 
 Supported links: `vless://` with `security` = `none` / `tls` / `reality` and
 transport `tcp` / `ws` / `grpc` / `httpupgrade` / `http`. Anything else is
-skipped and reported by `kvn check`.
+skipped and reported by `kvn fetch`.
 
 ## Installation
 
@@ -57,7 +57,7 @@ The service does not start while this file is missing.
 pipx install git+https://github.com/<you>/kvn
 # or, from a checkout: pipx install .
 
-kvn check          # fetches the subscription and validates the config
+kvn fetch --dry-run   # downloads the subscription and validates the config
 
 mkdir -p ~/.config/systemd/user
 cp contrib/systemd/kvn.service ~/.config/systemd/user/
@@ -100,15 +100,30 @@ curl https://1.1.1.1/cdn-cgi/trace
 
 ## Usage
 
+The service runs on its own; the commands are for when something is off.
+Start with `kvn status`, it tells which command to run next.
+
+| situation | command |
+|---|---|
+| what's going on? | `kvn status` |
+| sites don't open / it's slow, but the service runs | `kvn connect` — re-test all servers and switch to the best one |
+| all servers are dead, or Blanc changed the servers | `kvn fetch` — download the subscription now and apply it |
+| sing-box hangs, nothing helps | `kvn restart` |
+| turn the proxy on / off | `kvn start`, `kvn stop` |
+| why? | `kvn logs` |
+| which server is the fastest | `kvn servers` |
+
 ```
-kvn run              # the daemon (what the systemd unit runs)
-kvn check            # fetch + parse the subscription, validate the sing-box config
-kvn status [-t]      # current server and per-server delays (-t: re-test first)
-kvn update           # ask the running daemon to refresh and re-test now
-journalctl --user -u kvn -f
+kvn status                  # service, proxy, current server, subscription age/expiry
+kvn connect                 # re-test every server, switch to the fastest live one
+kvn fetch [-n] [-v]         # download the subscription and apply it (-n: only validate, -v: list servers)
+kvn start | stop | restart  # the systemd user service
+kvn logs [-n 50] [--no-follow]
+kvn servers                 # every server with its last measured delay
+kvn run                     # the daemon itself (what the service runs)
 ```
 
-`check` and `status` never print the subscription URL or server credentials.
+None of the commands print the subscription URL or server credentials.
 
 ## Configuration
 
@@ -153,7 +168,7 @@ State (server cache, generated sing-box config, rule-sets, API secret) lives in
 
 ```sh
 python -m unittest discover -s tests   # sing-box on PATH enables the config check test
-python -m kvn check
+python -m kvn fetch --dry-run
 ```
 
 ## License
