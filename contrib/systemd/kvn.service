@@ -1,0 +1,19 @@
+# User unit: install to ~/.config/systemd/user/ and run
+#   systemctl --user enable --now kvn
+[Unit]
+Description=kvn: sing-box proxy with auto failover
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/.config/kvn/sub_url
+
+[Service]
+ExecStart=%h/.local/bin/kvn run
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+# Uncomment if sing-box / notify-send are not on the default PATH:
+# Environment=KVN_SING_BOX=/usr/local/bin/sing-box
+# Environment=KVN_NOTIFY_SEND=/usr/bin/notify-send
+
+[Install]
+WantedBy=default.target
