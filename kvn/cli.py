@@ -2,6 +2,7 @@
 
   status          is it running, does the proxy work, which server, how old is the subscription
   connect         re-test all servers now and switch to the best one
+  use             pin one server by hand, or `use auto` to hand control back to the watchdog
   fetch           download the subscription now and apply it
   start/stop/restart
                   control the background service (systemd user unit)
@@ -89,9 +90,14 @@ def cmd_status(settings, args):
         print(f"proxy         {settings['listen']}:{settings['port']}  {'works' if works else 'NOT working  → kvn connect'}")
         try:
             clash = clash_for(settings)
-            now = clash.current()
-            delay = clash.last_delay(now) if now else 0
-            print(f"server        {now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}")
+            sel = clash.selector().get("now")
+            if sel and sel != "auto":
+                delay = clash.last_delay(sel)
+                print(f"server        {sel}{f'  ({delay} ms)' if delay else ''}  (pinned → kvn use auto)")
+            else:
+                now = clash.current()
+                delay = clash.last_delay(now) if now else 0
+                print(f"server        {now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}  (auto)")
         except OSError:
             print("server        unknown, sing-box is not answering  → kvn restart")
 
@@ -134,6 +140,52 @@ def cmd_connect(settings, args):
     print(f"alive {len(alive)}/{total}; best: {top_list(alive)}")
     if not probe(settings["probe_urls"], proxy_url(settings)):
         return fail("servers answer, but the proxy still does not", "see: kvn logs")
+    return 0
+
+
+def resolve_server(name, members):
+    """Map a user-typed name onto a selector member.
+
+    Exact match wins; otherwise a unique case-insensitive substring (names carry
+    flags and spaces, so typing `nl` or `tokyo` is enough). Returns the tag, None
+    when nothing matches, or the list of candidates when it's ambiguous.
+    """
+    if name in members:
+        return name
+    hits = [m for m in members if name.lower() in m.lower()]
+    if len(hits) == 1:
+        return hits[0]
+    return hits or None
+
+
+def cmd_use(settings, args):
+    """Pin routing to one server, or 'auto' to hand control back to the watchdog."""
+    if not daemon_pid():
+        return fail("the service is not running", "start it: kvn start")
+    clash = clash_for(settings)
+    try:
+        members = clash.selector().get("all", [])
+    except OSError as e:
+        return fail(f"sing-box is not answering ({e})", "try: kvn restart")
+    target = resolve_server(args.server, members)
+    if target is None:
+        return fail(f"no server matches {args.server!r}", "see the names: kvn servers")
+    if isinstance(target, list):
+        return fail(f"{args.server!r} matches several servers:\n     " + "\n     ".join(target),
+                    "use a more specific name")
+    try:
+        clash.select(target)
+    except OSError as e:
+        return fail(f"could not switch ({e})", "try: kvn restart")
+    if target == "auto":
+        print("auto: the watchdog picks the fastest live server and switches on failure")
+        return 0
+    try:
+        delay = clash.last_delay(target)
+    except OSError:
+        delay = 0
+    print(f"pinned to {target}{f'  ({delay} ms)' if delay else ''}")
+    print("the watchdog won't switch or recover while pinned  → kvn use auto")
     return 0
 
 
@@ -220,12 +272,19 @@ def cmd_logs(settings, args):
 def cmd_servers(settings, args):
     if not daemon_pid():
         return fail("the service is not running", "start it: kvn start")
+    clash = clash_for(settings)
     try:
-        now, delays = clash_for(settings).delays()
+        now, delays = clash.delays()
+        sel = clash.selector().get("now")
     except OSError as e:
         return fail(f"sing-box is not answering ({e})", "try: kvn restart")
+    routed = sel if sel and sel != "auto" else now
     for tag, d in sorted(delays.items(), key=lambda kv: (kv[1] <= 0, kv[1])):
-        print(f"{'*' if tag == now else ' '} {d if d > 0 else 'dead':>6}  {tag}")
+        print(f"{'*' if tag == routed else ' '} {d if d > 0 else 'dead':>6}  {tag}")
+    if sel and sel != "auto":
+        print(f"\npinned to {sel}  → kvn use auto")
+    else:
+        print("\nauto: * is the current pick  → kvn use <name> to pin one")
     return 0
 
 
@@ -246,6 +305,8 @@ def main(argv=None):
 
     sub.add_parser("status", help="is it running, does the proxy work, current server, subscription age")
     sub.add_parser("connect", help="re-test all servers now and switch to the best one")
+    u = sub.add_parser("use", help="pin routing to one server, or 'auto' for fastest-server autopilot")
+    u.add_argument("server", metavar="SERVER|auto", help="server name (a substring is enough) or 'auto'")
     f = sub.add_parser("fetch", help="download the subscription now and apply it")
     f.add_argument("-n", "--dry-run", action="store_true", help="only download and validate")
     f.add_argument("-v", "--verbose", action="store_true", help="list every server")
@@ -261,7 +322,7 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     handlers = {
-        "status": cmd_status, "connect": cmd_connect, "fetch": cmd_fetch, "logs": cmd_logs,
+        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "fetch": cmd_fetch, "logs": cmd_logs,
         "servers": cmd_servers, "run": cmd_run,
         "start": service_cmd("start"), "stop": service_cmd("stop"), "restart": service_cmd("restart"),
     }

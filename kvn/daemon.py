@@ -228,7 +228,24 @@ class Watchdog:
         except OSError:
             return []
 
+    def pinned(self):
+        """The server the user pinned with `kvn use`, or None while on auto.
+
+        The selector in sing-box is the single source of truth, so a pin set from
+        the CLI is honoured here without any shared state; a sing-box restart resets
+        it to 'auto'.
+        """
+        try:
+            sel = self.clash.selector().get("now")
+        except OSError:
+            return None
+        return sel if sel and sel != "auto" else None
+
     def tick(self):
+        if self.pinned():
+            # The user pinned an exit; keep sing-box supervised (main loop) but don't
+            # probe-recover or let anything switch servers. `kvn use auto` resumes.
+            return
         if probe(self.s["probe_urls"], self.proxy):
             self.handle_up()
             return
@@ -305,14 +322,14 @@ class Watchdog:
                 log.info("manual update requested")
                 self.next_sub = now + self.s["sub_interval"]
                 self.recover()
-            elif now >= self.next_sub:
+            elif now >= self.next_sub and not self.pinned():
                 self.next_sub = now + self.s["sub_interval"]
                 if self.refresh_subscription():
                     self.apply_config()
 
             try:
                 self.tick()
-                if self.state == "up" and now >= self.next_rules:
+                if self.state == "up" and now >= self.next_rules and not self.pinned():
                     self.next_rules = now + self.s["ruleset_interval"]
                     if self.refresh_rulesets():
                         self.apply_config()

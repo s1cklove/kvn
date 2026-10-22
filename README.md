@@ -107,6 +107,7 @@ Start with `kvn status`, it tells which command to run next.
 |---|---|
 | what's going on? | `kvn status` |
 | sites don't open / it's slow, but the service runs | `kvn connect` — re-test all servers and switch to the best one |
+| I want a specific exit (country), not the fastest | `kvn use <name>` — pin it; `kvn use auto` hands control back |
 | all servers are dead, or Blanc changed the servers | `kvn fetch` — download the subscription now and apply it |
 | sing-box hangs, nothing helps | `kvn restart` |
 | turn the proxy on / off | `kvn start`, `kvn stop` |
@@ -116,6 +117,7 @@ Start with `kvn status`, it tells which command to run next.
 ```
 kvn status                  # service, proxy, current server, subscription age/expiry
 kvn connect                 # re-test every server, switch to the fastest live one
+kvn use <name>|auto         # pin one server by hand (substring is enough), or back to auto
 kvn fetch [-n] [-v]         # download the subscription and apply it (-n: only validate, -v: list servers)
 kvn start | stop | restart  # the systemd user service
 kvn logs [-n 50] [--no-follow]
@@ -124,6 +126,23 @@ kvn run                     # the daemon itself (what the service runs)
 ```
 
 None of the commands print the subscription URL or server credentials.
+
+### Picking a server by hand
+
+By default routing goes through an `auto` group that always uses the fastest
+server that answers, and the watchdog re-tests and switches on its own. To
+override that — a specific country, or just to stop it hopping around:
+
+```sh
+kvn servers            # see the names and their delays
+kvn use berlin         # pin it: a substring of the name is enough
+kvn use auto           # back to automatic — the watchdog takes over again
+```
+
+While a server is pinned the watchdog leaves it alone: it keeps sing-box running
+but won't switch servers, recover on failure, or restart to apply a routine
+subscription refresh. A pin is **runtime-only** — any sing-box restart (`kvn
+restart`, a crash, `kvn fetch`) resets routing to `auto`.
 
 ## Configuration
 

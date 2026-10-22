@@ -21,17 +21,27 @@ class BuildConfigTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def outbound(self, cfg, tag):
+        return next(o for o in cfg["outbounds"] if o["tag"] == tag)
+
     def test_excluded_servers_are_left_out(self):
         cfg = singbox.build_config(dict(DEFAULTS), [NL, RU], "s")
-        auto = cfg["outbounds"][0]
+        auto = self.outbound(cfg, "auto")
         self.assertEqual(auto["type"], "urltest")
         self.assertEqual(auto["outbounds"], ["🇳🇱 NL"])
-        self.assertEqual(cfg["route"]["final"], "auto")
         self.assertEqual(cfg["inbounds"][0]["listen_port"], DEFAULTS["port"])
+
+    def test_routing_goes_through_the_selector(self):
+        cfg = singbox.build_config(dict(DEFAULTS), [NL, RU], "s")
+        select = self.outbound(cfg, "select")
+        self.assertEqual(select["type"], "selector")
+        self.assertEqual(select["outbounds"], ["auto", "🇳🇱 NL"])  # only selectable exits, same as auto
+        self.assertEqual(select["default"], "auto")
+        self.assertEqual(cfg["route"]["final"], "select")
 
     def test_everything_excluded_falls_back_to_all(self):
         cfg = singbox.build_config(dict(DEFAULTS), [RU], "s")
-        self.assertEqual(cfg["outbounds"][0]["outbounds"], ["🇷🇺 Россия"])
+        self.assertEqual(self.outbound(cfg, "auto")["outbounds"], ["🇷🇺 Россия"])
 
     def test_only_downloaded_rulesets_are_referenced(self):
         open(os.path.join(self.rules, "geoip-ru.srs"), "wb").write(b"SRS")

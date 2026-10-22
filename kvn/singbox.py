@@ -20,18 +20,25 @@ def build_config(settings, servers, secret):
         if rule_sets:
             rules.append({"rule_set": [r["tag"] for r in rule_sets], "outbound": "direct"})
 
+    tags = [s["tag"] for s in chosen]
     return {
         "log": {"level": "warn", "timestamp": False},
         "inbounds": [{"type": "mixed", "tag": "mixed-in",
                       "listen": settings["listen"], "listen_port": settings["port"]}],
         "outbounds": [
-            {"type": "urltest", "tag": "auto", "outbounds": [s["tag"] for s in chosen],
+            # "select" is what routing actually uses; its default member is "auto"
+            # (the urltest group), so out of the box traffic goes to the fastest live
+            # server. `kvn use <server>` points it at one exit instead; `kvn use auto`
+            # points it back. The daemon reads "select" to decide whether to intervene.
+            {"type": "selector", "tag": "select", "outbounds": ["auto", *tags],
+             "default": "auto", "interrupt_exist_connections": True},
+            {"type": "urltest", "tag": "auto", "outbounds": tags,
              "url": settings["test_url"], "interval": settings["urltest_interval"],
              "tolerance": settings["tolerance"], "interrupt_exist_connections": True},
             *chosen,
             {"type": "direct", "tag": "direct"},
         ],
-        "route": {"rules": rules, "rule_set": rule_sets, "final": "auto"},
+        "route": {"rules": rules, "rule_set": rule_sets, "final": "select"},
         "experimental": {"clash_api": {"external_controller": settings["clash_api"], "secret": secret}},
     }
 

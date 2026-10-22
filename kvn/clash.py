@@ -15,8 +15,23 @@ class Clash:
         with opener.open(req, timeout=timeout) as r:
             return json.load(r)
 
+    def put(self, path, body, timeout=5):
+        req = urllib.request.Request(
+            self.base + path, data=json.dumps(body).encode(), method="PUT",
+            headers={"Authorization": f"Bearer {self.secret}", "Content-Type": "application/json"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener.open(req, timeout=timeout).close()  # 204, no body
+
     def current(self):
         return self.get("/proxies/auto")["now"]
+
+    def selector(self):
+        """The routing selector: now is 'auto' or a pinned server; all lists the choices."""
+        return self.get("/proxies/select")
+
+    def select(self, name):
+        """Point routing at 'auto' (urltest) or a specific server tag."""
+        self.put("/proxies/select", {"name": name})
 
     def last_delay(self, tag):
         hist = self.get("/proxies/" + urllib.parse.quote(tag, safe="")).get("history") or []
