@@ -52,6 +52,31 @@ def build_config(settings, servers, secret):
     }
 
 
+def build_vps_config(settings, servers):
+    tags = [s["tag"] for s in servers]
+    rules, rule_sets = _route_rules(settings["vps_bypass_russia"], settings["rulesets"])
+    if len(servers) == 1:
+        outbounds = [*servers, {"type": "direct", "tag": "direct"}]
+        final = tags[0]
+    else:
+        outbounds = [
+            {"type": "urltest", "tag": "auto", "outbounds": tags,
+             "url": settings["test_url"], "interval": settings["urltest_interval"],
+             "tolerance": settings["tolerance"], "interrupt_exist_connections": True},
+            *servers,
+            {"type": "direct", "tag": "direct"},
+        ]
+        final = "auto"
+
+    return {
+        "log": {"level": "warn", "timestamp": False},
+        "inbounds": [{"type": "mixed", "tag": "mixed-in",
+                      "listen": settings["vps_listen"], "listen_port": settings["vps_port"]}],
+        "outbounds": outbounds,
+        "route": {"rules": rules, "rule_set": rule_sets, "final": final},
+    }
+
+
 def check_config(path):
     r = subprocess.run([SING_BOX, "check", "-c", path], capture_output=True, text=True)
     return r.returncode == 0, (r.stderr or r.stdout).strip()

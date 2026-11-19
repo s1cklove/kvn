@@ -9,6 +9,7 @@
                   control the background service (systemd user unit)
   logs            follow the service log
   servers         every server with its last measured delay
+  vps             manage the standalone VPS proxy (status/start/stop/restart/check/logs/run)
   run             the daemon itself (what the service runs)
 """
 
@@ -23,12 +24,13 @@ import subprocess
 import sys
 import time
 
-from . import __version__, master
+from . import __version__, master, vps
 from .clash import Clash, top_list
 from .daemon import Watchdog
 from .net import probe
 from .settings import (
-    PID_FILE, STATE_DIR, SUB_URL_FILE, get_secret, load_settings, load_sub_meta, save_servers, write_atomic,
+    PID_FILE, STATE_DIR, SUB_URL_FILE, VPS_URL_FILE, get_secret, load_settings, load_sub_meta, save_servers,
+    write_atomic,
 )
 from .singbox import build_config, check_config
 from .subscription import fetch_subscription, subscription_expiry
@@ -340,6 +342,129 @@ def cmd_run(settings, args):
     return 0
 
 
+# ---------------------------------------------------------------- vps commands
+
+def _vps_kind(server):
+    return "reality" if server.get("tls", {}).get("reality") else "tls" if server.get("tls") else "plain"
+
+
+def cmd_vps_status(settings, args):
+    host, port = settings["vps_listen"], settings["vps_port"]
+    pid = vps.vps_pid()
+    listening = vps.port_open(host, port, timeout=0.5)
+    if pid:
+        svc = f"running (pid {pid})"
+    elif listening:
+        svc = "running (port open)"
+    else:
+        svc = "not running  → kvn vps start"
+    print(f"service       {svc}")
+
+    if pid or listening:
+        ms = vps.probe_latency(settings["probe_urls"], vps.vps_proxy_url(settings))
+        status = f"works ({ms} ms)" if ms else "NOT working  → kvn vps logs"
+        print(f"proxy         {host}:{port}  {status}")
+    else:
+        print(f"proxy         {host}:{port}  (stopped)")
+
+    if not os.path.exists(VPS_URL_FILE):
+        print(f"config        missing  → put vless://... into {VPS_URL_FILE}")
+        return 0
+    try:
+        servers, skipped = vps.load_vps_servers()
+    except (OSError, ValueError) as e:
+        print(f"config        invalid ({e})  → kvn vps check")
+        return 0
+    if len(servers) == 1:
+        s = servers[0]
+        print(f"server        {s['tag']}  ({s['server']}:{s['server_port']}, {_vps_kind(s)})")
+    else:
+        tags = ", ".join(s["tag"] for s in servers)
+        print(f"servers       {len(servers)} ({tags})")
+    if skipped:
+        print("skipped       " + ", ".join(f"{k} ×{n}" for k, n in skipped.items()))
+    return 0
+
+
+def cmd_vps_check(settings, args):
+    if not os.path.exists(VPS_URL_FILE):
+        return fail(f"no VPS link in {VPS_URL_FILE}",
+                    f"create it (chmod 600) with a vless://... line")
+    try:
+        servers, skipped, tmp = vps.prepare_vps_config(settings)
+    except (OSError, ValueError, RuntimeError) as e:
+        return fail(str(e))
+    os.unlink(tmp)
+    print(f"loaded {len(servers)} server(s) from {VPS_URL_FILE}:")
+    for s in servers:
+        print(f"  {_vps_kind(s):<7} {s.get('transport', {}).get('type', 'tcp'):<11} {s['tag']}  ({s['server']}:{s['server_port']})")
+    if skipped:
+        print("skipped:", ", ".join(f"{k} ×{n}" for k, n in skipped.items()))
+    print(f"proxy:  {settings['vps_listen']}:{settings['vps_port']}  (bypass_russia={'on' if settings['vps_bypass_russia'] else 'off'})")
+    print("config OK")
+    return 0
+
+
+def vps_service_cmd(action):
+    def run(settings, args):
+        if action in ("start", "restart") and not os.path.exists(VPS_URL_FILE):
+            return fail(f"no VPS link in {VPS_URL_FILE}",
+                        "put your vless://... link there (chmod 600) first")
+        try:
+            r = systemctl(action, vps.VPS_SERVICE)
+        except OSError as e:
+            return fail(str(e))
+        if r.returncode != 0:
+            return fail(f"systemctl --user {action} {vps.VPS_SERVICE} failed", "see: kvn vps logs")
+        if action == "stop":
+            print("stopped; the VPS proxy is down until: kvn vps start")
+            return 0
+        host, port = settings["vps_listen"], settings["vps_port"]
+        for _ in range(30):
+            if vps.port_open(host, port, timeout=0.5):
+                print(f"{action}ed; proxy on {host}:{port}; check with: kvn vps status")
+                return 0
+            time.sleep(0.5)
+        return fail("the service started but the VPS proxy port is not listening yet", "see: kvn vps logs")
+    return run
+
+
+def cmd_vps_logs(settings, args):
+    if not shutil.which("journalctl"):
+        return fail("journalctl not found")
+    cmd = ["journalctl", "--user", "-u", vps.VPS_SERVICE, "-n", str(args.lines)]
+    if not args.no_follow:
+        cmd.append("-f")
+    try:
+        return subprocess.run(cmd).returncode
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_vps_run(settings, args):
+    if not os.path.exists(VPS_URL_FILE):
+        return fail(f"no VPS link in {VPS_URL_FILE}")
+    try:
+        vps.run_vps(settings)
+    except (OSError, ValueError, RuntimeError) as e:
+        return fail(str(e))
+    return 0
+
+
+def cmd_vps(settings, args):
+    handlers = {
+        None: cmd_vps_status,
+        "status": cmd_vps_status,
+        "check": cmd_vps_check,
+        "start": vps_service_cmd("start"),
+        "stop": vps_service_cmd("stop"),
+        "restart": vps_service_cmd("restart"),
+        "logs": cmd_vps_logs,
+        "run": cmd_vps_run,
+    }
+    return handlers[args.vps_cmd](settings, args)
+
+
 # ---------------------------------------------------------------- entry point
 
 def main(argv=None):
@@ -366,13 +491,24 @@ def main(argv=None):
     lg.add_argument("-n", "--lines", type=int, default=50)
     lg.add_argument("--no-follow", action="store_true")
     sub.add_parser("servers", help="every server with its last measured delay")
+    vp = sub.add_parser("vps", help="standalone VPS proxy (separate from the subscription service)")
+    vsub = vp.add_subparsers(dest="vps_cmd", metavar="action")
+    vsub.add_parser("status", help="is kvn-vps running, does the proxy work, latency")
+    vsub.add_parser("start", help="start the kvn-vps user service")
+    vsub.add_parser("stop", help="stop the kvn-vps user service")
+    vsub.add_parser("restart", help="restart the kvn-vps user service")
+    vsub.add_parser("check", help="validate ~/.config/kvn/vps_url and generated sing-box config")
+    vlg = vsub.add_parser("logs", help="follow the kvn-vps service log")
+    vlg.add_argument("-n", "--lines", type=int, default=50)
+    vlg.add_argument("--no-follow", action="store_true")
+    vsub.add_parser("run", help="run the VPS sing-box proxy in the foreground (what kvn-vps.service runs)")
     sub.add_parser("run", help="run the daemon in the foreground (what the service runs)")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     handlers = {
         "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master, "fetch": cmd_fetch,
-        "logs": cmd_logs, "servers": cmd_servers, "run": cmd_run,
+        "logs": cmd_logs, "servers": cmd_servers, "vps": cmd_vps, "run": cmd_run,
         "start": service_cmd("start"), "stop": service_cmd("stop"), "restart": service_cmd("restart"),
     }
     try:

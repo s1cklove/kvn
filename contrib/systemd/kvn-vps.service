@@ -1,0 +1,18 @@
+# User unit: install to ~/.config/systemd/user/ and run
+#   systemctl --user start kvn-vps   (or: kvn vps start)
+[Unit]
+Description=kvn-vps: local sing-box proxy for a standalone VPS
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/.config/kvn/vps_url
+
+[Service]
+ExecStart=%h/.local/bin/kvn vps run
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Uncomment if sing-box is not on the default PATH:
+# Environment=KVN_SING_BOX=/usr/local/bin/sing-box
+
+[Install]
+WantedBy=default.target

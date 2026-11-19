@@ -172,12 +172,38 @@ Optional `~/.config/kvn/config.json`, any subset of:
 | `rulesets` | hiddify / MetaCubeX / runetfreedom | rule-sets for the bypass, name → `.srs` URL |
 | `notify_switch` | `true` | notify when urltest changes the server |
 | `expire_warn_days` | `3` | warn this many days before the subscription expires |
+| `vps_listen`, `vps_port` | `127.0.0.1`, `10809` | where the standalone `kvn vps` proxy listens |
+| `vps_bypass_russia` | `true` | route RU domains / IPs directly in `kvn vps` |
 
 Environment: `KVN_SING_BOX`, `KVN_NOTIFY_SEND` (paths to the tools),
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME`.
 
 State (server cache, generated sing-box config, rule-sets, API secret) lives in
 `~/.local/state/kvn/`; deleting it is safe.
+
+## Standalone VPS (`kvn vps`)
+
+To keep a separate local proxy for your own VPS (independent of the subscription
+daemon and on its own port `127.0.0.1:10809`), put one or more `vless://...`
+links into `~/.config/kvn/vps_url` (`chmod 600`, out of git / the Nix store):
+
+```sh
+install -m 600 /dev/null ~/.config/kvn/vps_url
+$EDITOR ~/.config/kvn/vps_url   # paste your vless://... link
+kvn vps check                   # parse link and validate sing-box config
+kvn vps start                   # start the kvn-vps user service
+kvn vps status                  # check proxy status and latency
+```
+
+Commands: `kvn vps [status | start | stop | restart | check | logs | run]`.
+
+- Uses its own systemd user unit (`kvn-vps.service`, installed automatically by
+  the Home Manager module when `services.kvn.enable = true`).
+- By default `kvn-vps` is on-demand (`kvn vps start` / `kvn vps stop`); set
+  `services.kvn.vps.autoStart = true` in Home Manager to start it on login.
+- Exposes a mixed HTTP/SOCKS5 proxy on `127.0.0.1:10809` (no TUN/system-wide
+  routing), so you can point only the apps you want at it while `kvn` keeps
+  running on `127.0.0.1:10808`.
 
 ## Master server
 
