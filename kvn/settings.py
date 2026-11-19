@@ -32,6 +32,12 @@ DEFAULTS = {
     "exclude": "🇷🇺|Россия",
     "urltest_interval": "3m",
     "tolerance": 150,
+    # Master server: regex; the fastest live match is used instead of urltest's pick
+    # while it lags the leader by at most master_max_ratio times OR master_max_lag ms.
+    # `kvn master off` turns it off without touching this config.
+    "master": "Амстердам",
+    "master_max_ratio": 2,
+    "master_max_lag": 150,
     "notify_switch": True,
     "bypass_russia": True,
     "rulesets": {
@@ -54,6 +60,8 @@ SUB_META_FILE = os.path.join(STATE_DIR, "subscription.json")
 BOX_CONFIG = os.path.join(STATE_DIR, "config.json")
 SECRET_FILE = os.path.join(STATE_DIR, "clash_secret")
 RULES_DIR = os.path.join(STATE_DIR, "rules")
+#: exists while `kvn master off` is in effect
+MASTER_OFF_FILE = os.path.join(STATE_DIR, "master_off")
 PID_FILE = os.path.join(RUN_DIR, "kvn.pid")
 
 

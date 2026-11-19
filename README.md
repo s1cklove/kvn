@@ -6,7 +6,8 @@ a VPN client.
 
 - Downloads the subscription, turns every server into a sing-box outbound and
   puts them into a single `urltest` group: traffic always goes through the
-  fastest server that answers.
+  fastest server that answers — unless the *master* server (Amsterdam by
+  default) is good enough, then it is preferred.
 - Probes the tunnel every 30 s. When it dies, re-downloads the subscription
   (Blanc rotates SNI / short ids), re-tests every server and lets sing-box
   switch over. Tells apart "VPN is down" from "no internet at all".
@@ -113,11 +114,13 @@ Start with `kvn status`, it tells which command to run next.
 | turn the proxy on / off | `kvn start`, `kvn stop` |
 | why? | `kvn logs` |
 | which server is the fastest | `kvn servers` |
+| prefer the master server / stop preferring it | `kvn master on`, `kvn master off` |
 
 ```
 kvn status                  # service, proxy, current server, subscription age/expiry
 kvn connect                 # re-test every server, switch to the fastest live one
 kvn use <name>|auto         # pin one server by hand (substring is enough), or back to auto
+kvn master [on|off]         # show the master server and why it is / isn't used; turn it on / off
 kvn fetch [-n] [-v]         # download the subscription and apply it (-n: only validate, -v: list servers)
 kvn start | stop | restart  # the systemd user service
 kvn logs [-n 50] [--no-follow]
@@ -162,6 +165,8 @@ Optional `~/.config/kvn/config.json`, any subset of:
 | `probe_urls` | anthropic / 1.1.1.1 / github | "is the tunnel alive" probes (any success = alive) |
 | `direct_probe_urls` | `ya.ru`, `vk.com` | "is the internet alive" probes, direct |
 | `exclude` | `🇷🇺\|Россия` | regex; matching server names are left out of auto-selection |
+| `master` | `Амстердам` | regex; the fastest live matching server is preferred over urltest's pick while it's good enough; `""` disables |
+| `master_max_ratio`, `master_max_lag` | `2`, `150` | "good enough": at most this many times slower than the leader **or** at most this many ms behind it |
 | `urltest_interval`, `tolerance` | `3m`, `150` | sing-box urltest tuning |
 | `bypass_russia` | `true` | route RU domains / IPs directly |
 | `rulesets` | hiddify / MetaCubeX / runetfreedom | rule-sets for the bypass, name → `.srs` URL |
@@ -174,6 +179,22 @@ Environment: `KVN_SING_BOX`, `KVN_NOTIFY_SEND` (paths to the tools),
 State (server cache, generated sing-box config, rule-sets, API secret) lives in
 `~/.local/state/kvn/`; deleting it is safe.
 
+## Master server
+
+Automatic routing (`select` → `auto`) goes through a selector that points either
+at the `fastest` urltest group or at the master server (a manual pin with
+`kvn use <name>` overrides both). Every check (30 s) the daemon compares the
+master's last measured delay with the leader's — the fastest live server — and
+uses the master while it answers and is at most `master_max_ratio` times slower
+**or** at most `master_max_lag` ms behind. So Amsterdam at 260 ms still wins
+over a 130 ms leader (2×), and at 200 ms over a 60 ms one (140 ms behind).
+Delays are re-measured every `urltest_interval`; switching between the master
+and urltest's pick doesn't drop open connections. A master that matches
+`exclude` is never used.
+
+`kvn master off` survives restarts (a `master_off` file in the state dir) and
+doesn't touch `config.json`, so it works with the Home Manager module too.
+
 ## How recovery works
 
 1. Probe through the proxy fails `fail_threshold` times in a row.
@@ -181,6 +202,7 @@ State (server cache, generated sing-box config, rule-sets, API secret) lives in
 3. Otherwise notify, re-download the subscription — direct first, because Blanc
    refuses it from its own exits — and restart sing-box if the servers changed.
 4. Ask urltest to re-test every server; it switches to the fastest alive one.
+   If the master server is alive and good enough, traffic goes there instead.
 5. Repeat every `recover_backoff` seconds until the probe passes again.
 
 ## Development

@@ -22,16 +22,29 @@ class Clash:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         opener.open(req, timeout=timeout).close()  # 204, no body
 
-    def current(self):
-        return self.get("/proxies/auto")["now"]
-
     def selector(self):
-        """The routing selector: now is 'auto' or a pinned server; all lists the choices."""
+        """The manual routing selector: now is 'auto' or a pinned server; all lists the choices."""
         return self.get("/proxies/select")
 
     def select(self, name):
-        """Point routing at 'auto' (urltest) or a specific server tag."""
+        """Point manual routing at 'auto' or a specific server tag."""
         self.put("/proxies/select", {"name": name})
+
+    def auto_selected(self):
+        """What automatic routing uses: 'fastest' (urltest) or the master server tag."""
+        return self.get("/proxies/auto")["now"]
+
+    def select_auto(self, name):
+        """Point automatic routing at 'fastest' (urltest) or the master server tag."""
+        self.put("/proxies/auto", {"name": name})
+
+    def current(self):
+        """The server traffic actually goes through."""
+        sel = self.selector().get("now")
+        if sel and sel != "auto":
+            return sel
+        auto = self.auto_selected()
+        return self.get("/proxies/fastest")["now"] if auto == "fastest" else auto
 
     def last_delay(self, tag):
         hist = self.get("/proxies/" + urllib.parse.quote(tag, safe="")).get("history") or []
@@ -49,17 +62,19 @@ class Clash:
         give_up = time.monotonic() + deadline
         while True:
             started = time.monotonic()
-            res = self.get(f"/group/auto/delay?{q}", timeout=timeout_ms / 1000 + 60)
+            res = self.get(f"/group/fastest/delay?{q}", timeout=timeout_ms / 1000 + 60)
             alive = {k: v for k, v in res.items() if v and v > 0}
             if alive or time.monotonic() - started > 1 or time.monotonic() > give_up:
                 return alive
             time.sleep(2)
 
     def delays(self):
-        group = self.get("/proxies/auto")
+        """(urltest pick, {tag: last delay or 0 if dead}) for every server in the group."""
+        proxies = self.get("/proxies")["proxies"]
+        group = proxies["fastest"]
         out = {}
         for tag in group.get("all", []):
-            hist = self.get("/proxies/" + urllib.parse.quote(tag, safe="")).get("history") or []
+            hist = proxies.get(tag, {}).get("history") or []
             out[tag] = hist[-1]["delay"] if hist else 0
         return group["now"], out
 

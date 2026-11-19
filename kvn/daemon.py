@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 
+from . import master
 from .clash import Clash, top_list
 from .net import probe
 from .notify import notify
@@ -202,6 +203,15 @@ class Watchdog:
             notify("Switched server", f"{self.current} → {self.describe(now)}", "low", "network-vpn")
         self.current = now
 
+    def steer(self):
+        try:
+            before, after = master.steer(self.s, self.clash)
+        except OSError as e:
+            log.warning("could not steer to the master server: %s", e)
+            return
+        if before != after:
+            log.info("routing: %s → %s", before, after)
+
     def recover(self):
         self.last_recover = time.time()
         if self.refresh_subscription(take_rotation=True):
@@ -213,6 +223,7 @@ class Watchdog:
             alive = {}
         total = len(self.group_members())
         log.info("group test: %d/%d alive; best: %s", len(alive), total, top_list(alive, 5))
+        self.steer()
         if not alive:
             if time.time() - self.last_dead_notice > 900:
                 self.last_dead_notice = time.time()
@@ -224,7 +235,7 @@ class Watchdog:
 
     def group_members(self):
         try:
-            return self.clash.get("/proxies/auto").get("all", [])
+            return self.clash.get("/proxies/fastest").get("all", [])
         except OSError:
             return []
 
@@ -246,6 +257,7 @@ class Watchdog:
             # The user pinned an exit; keep sing-box supervised (main loop) but don't
             # probe-recover or let anything switch servers. `kvn use auto` resumes.
             return
+        self.steer()
         if probe(self.s["probe_urls"], self.proxy):
             self.handle_up()
             return

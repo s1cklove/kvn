@@ -3,6 +3,7 @@
   status          is it running, does the proxy work, which server, how old is the subscription
   connect         re-test all servers now and switch to the best one
   use             pin one server by hand, or `use auto` to hand control back to the watchdog
+  master          show / turn on / turn off preferring the master server
   fetch           download the subscription now and apply it
   start/stop/restart
                   control the background service (systemd user unit)
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__
+from . import __version__, master
 from .clash import Clash, top_list
 from .daemon import Watchdog
 from .net import probe
@@ -95,9 +96,11 @@ def cmd_status(settings, args):
                 delay = clash.last_delay(sel)
                 print(f"server        {sel}{f'  ({delay} ms)' if delay else ''}  (pinned → kvn use auto)")
             else:
+                auto_sel = clash.auto_selected()
                 now = clash.current()
                 delay = clash.last_delay(now) if now else 0
-                print(f"server        {now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}  (auto)")
+                how = "master" if auto_sel != "fastest" else "auto"
+                print(f"server        {now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}  ({how})")
         except OSError:
             print("server        unknown, sing-box is not answering  → kvn restart")
 
@@ -126,8 +129,9 @@ def cmd_connect(settings, args):
         before = clash.current()
         print("testing all servers, can take up to a minute…", flush=True)
         alive = clash.test_all(settings["test_url"])
-        total = len(clash.get("/proxies/auto").get("all", []))
+        total = len(clash.get("/proxies/fastest").get("all", []))
         time.sleep(1)  # urltest re-picks right after the group test
+        master.steer(settings, clash)
         now = clash.current()
         delay = clash.last_delay(now) if now else 0
     except OSError as e:
@@ -178,7 +182,11 @@ def cmd_use(settings, args):
     except OSError as e:
         return fail(f"could not switch ({e})", "try: kvn restart")
     if target == "auto":
-        print("auto: the watchdog picks the fastest live server and switches on failure")
+        try:
+            master.steer(settings, clash)
+        except OSError:
+            pass
+        print("auto: the watchdog picks the fastest live server (or master) and switches on failure")
         return 0
     try:
         delay = clash.last_delay(target)
@@ -274,17 +282,56 @@ def cmd_servers(settings, args):
         return fail("the service is not running", "start it: kvn start")
     clash = clash_for(settings)
     try:
-        now, delays = clash.delays()
+        _, delays = clash.delays()
         sel = clash.selector().get("now")
+        auto_sel = clash.auto_selected()
+        routed = clash.current()
     except OSError as e:
         return fail(f"sing-box is not answering ({e})", "try: kvn restart")
-    routed = sel if sel and sel != "auto" else now
     for tag, d in sorted(delays.items(), key=lambda kv: (kv[1] <= 0, kv[1])):
         print(f"{'*' if tag == routed else ' '} {d if d > 0 else 'dead':>6}  {tag}")
     if sel and sel != "auto":
         print(f"\npinned to {sel}  → kvn use auto")
+    elif auto_sel != "fastest":
+        print(f"\nmaster: * is the preferred server  → kvn master off / kvn use <name>")
     else:
         print("\nauto: * is the current pick  → kvn use <name> to pin one")
+    return 0
+
+
+def cmd_master(settings, args):
+    if not settings["master"]:
+        return fail("no master server configured", 'set "master" (a regex) in config.json')
+    if args.state:
+        master.set_enabled(args.state == "on")
+    on = master.enabled(settings)
+    rule = f"lag ≤ {settings['master_max_ratio']}× or ≤ {settings['master_max_lag']} ms behind the leader"
+    print(f"master        {'on' if on else 'off'}, /{settings['master']}/, {rule}")
+    if not daemon_pid():
+        print("service       not running  → kvn start")
+        return 0
+    clash = clash_for(settings)
+    try:
+        if args.state:
+            master.steer(settings, clash)
+        _, delays = clash.delays()
+        sel = clash.selector().get("now")
+        auto_sel = clash.auto_selected()
+        now = clash.current()
+    except OSError as e:
+        return fail(f"sing-box is not answering ({e})", "try: kvn restart")
+    tag, delay, best, ok = master.evaluate(settings, delays)
+    if tag:
+        verdict = "good enough" if ok else "too slow"
+        print(f"candidate     {tag}  ({delay} ms, leader {best} ms): {verdict}")
+    elif not any(re.search(settings["master"], t) for t in delays):
+        print(f"candidate     no server matches /{settings['master']}/  → kvn servers")
+    else:
+        print("candidate     dead or not tested yet")
+    if sel and sel != "auto":
+        print(f"routing via   {sel}  (pinned → kvn use auto)")
+    else:
+        print(f"routing via   {now or 'still choosing'}  ({'master' if auto_sel != 'fastest' else 'urltest pick'})")
     return 0
 
 
@@ -307,6 +354,8 @@ def main(argv=None):
     sub.add_parser("connect", help="re-test all servers now and switch to the best one")
     u = sub.add_parser("use", help="pin routing to one server, or 'auto' for fastest-server autopilot")
     u.add_argument("server", metavar="SERVER|auto", help="server name (a substring is enough) or 'auto'")
+    m = sub.add_parser("master", help="prefer the master server while it's good enough (on/off), or show it")
+    m.add_argument("state", nargs="?", choices=["on", "off"])
     f = sub.add_parser("fetch", help="download the subscription now and apply it")
     f.add_argument("-n", "--dry-run", action="store_true", help="only download and validate")
     f.add_argument("-v", "--verbose", action="store_true", help="list every server")
@@ -322,8 +371,8 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     handlers = {
-        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "fetch": cmd_fetch, "logs": cmd_logs,
-        "servers": cmd_servers, "run": cmd_run,
+        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master, "fetch": cmd_fetch,
+        "logs": cmd_logs, "servers": cmd_servers, "run": cmd_run,
         "start": service_cmd("start"), "stop": service_cmd("stop"), "restart": service_cmd("restart"),
     }
     try:

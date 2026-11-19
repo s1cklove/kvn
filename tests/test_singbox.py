@@ -26,22 +26,26 @@ class BuildConfigTest(unittest.TestCase):
 
     def test_excluded_servers_are_left_out(self):
         cfg = singbox.build_config(dict(DEFAULTS), [NL, RU], "s")
-        auto = self.outbound(cfg, "auto")
-        self.assertEqual(auto["type"], "urltest")
-        self.assertEqual(auto["outbounds"], ["🇳🇱 NL"])
+        fastest = self.outbound(cfg, "fastest")
+        self.assertEqual(fastest["type"], "urltest")
+        self.assertEqual(fastest["outbounds"], ["🇳🇱 NL"])
         self.assertEqual(cfg["inbounds"][0]["listen_port"], DEFAULTS["port"])
 
     def test_routing_goes_through_the_selector(self):
         cfg = singbox.build_config(dict(DEFAULTS), [NL, RU], "s")
         select = self.outbound(cfg, "select")
+        auto = self.outbound(cfg, "auto")
         self.assertEqual(select["type"], "selector")
         self.assertEqual(select["outbounds"], ["auto", "🇳🇱 NL"])  # only selectable exits, same as auto
         self.assertEqual(select["default"], "auto")
+        self.assertEqual(auto["type"], "selector")
+        self.assertEqual(auto["outbounds"], ["fastest", "🇳🇱 NL"])
+        self.assertEqual(auto["default"], "fastest")
         self.assertEqual(cfg["route"]["final"], "select")
 
     def test_everything_excluded_falls_back_to_all(self):
         cfg = singbox.build_config(dict(DEFAULTS), [RU], "s")
-        self.assertEqual(self.outbound(cfg, "auto")["outbounds"], ["🇷🇺 Россия"])
+        self.assertEqual(self.outbound(cfg, "fastest")["outbounds"], ["🇷🇺 Россия"])
 
     def test_only_downloaded_rulesets_are_referenced(self):
         open(os.path.join(self.rules, "geoip-ru.srs"), "wb").write(b"SRS")
