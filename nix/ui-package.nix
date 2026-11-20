@@ -32,7 +32,9 @@ stdenvNoCC.mkDerivation {
     runHook preInstall
     mkdir -p $out/share/kvn-ui $out/bin
     cp -r ui/app.py ui/web $out/share/kvn-ui/
-    if [ -f icon.png ]; then
+    if [ -f ui/icon.png ]; then
+      cp ui/icon.png $out/share/kvn-ui/icon.png
+    elif [ -f icon.png ]; then
       cp icon.png $out/share/kvn-ui/icon.png
     fi
 

@@ -33,7 +33,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
-      SING_BOX_VERSION: "1.11.15"
+      SING_BOX_VERSION: "1.14.4"
 
     steps:
       - uses: actions/checkout@v4
@@ -72,10 +72,27 @@ jobs:
       - name: Build KVN Connect bundle
         shell: bash
         run: |
-          ICON_ARGS=""
-          if [ -f icon.png ]; then
-            ICON_ARGS="--add-data icon.png${{ matrix.sep }}."
+          EXTRA_ARGS=()
+          ICON_FILE=""
+          if [ -f ui/icon.png ]; then
+            ICON_FILE="ui/icon.png"
+          elif [ -f icon.png ]; then
+            ICON_FILE="icon.png"
           fi
+          if [ -n "$ICON_FILE" ]; then
+            EXTRA_ARGS+=(--add-data "${ICON_FILE}${{ matrix.sep }}.")
+            EXTRA_ARGS+=(--icon "$ICON_FILE")
+          fi
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXTRA_ARGS+=(--collect-all webview --collect-all clr_loader --collect-all pythonnet)
+            EXTRA_ARGS+=(--hidden-import pystray._win32 --hidden-import webview.platforms.edgechromium)
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            EXTRA_ARGS+=(--collect-all webview --hidden-import pystray._darwin)
+          else
+            EXTRA_ARGS+=(--collect-all webview --hidden-import pystray._appindicator --hidden-import pystray._xorg)
+          fi
+
           pyinstaller \
             --noconfirm \
             --clean \
@@ -83,8 +100,31 @@ jobs:
             --name KVN-Connect \
             --add-data "ui/web${{ matrix.sep }}web" \
             --add-binary "build_bin/${{ matrix.sb_bin }}${{ matrix.sep }}." \
-            $ICON_ARGS \
+            "${EXTRA_ARGS[@]}" \
             ui/app.py
+
+      - name: Smoke-test bundled executable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\KVN-Connect\KVN-Connect.exe")) { throw "KVN-Connect.exe missing" }
+          if (-not (Get-ChildItem -Path "dist\KVN-Connect" -Recurse -Filter "sing-box.exe")) { throw "sing-box.exe missing" }
+          & "dist\KVN-Connect\KVN-Connect.exe" status --json
+          if ($LASTEXITCODE -gt 1) { throw "unexpected exit code: $LASTEXITCODE" }
+
+      - name: Smoke-test bundled executable (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          test -x dist/KVN-Connect/KVN-Connect
+          find dist/KVN-Connect -name sing-box | grep -q sing-box
+          ./dist/KVN-Connect/KVN-Connect status --json || [ $? -eq 1 ]
+
+      - name: Smoke-test bundled executable (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          test -d dist/KVN-Connect.app
+          find dist/KVN-Connect.app -name sing-box | grep -q sing-box
+          ./dist/KVN-Connect.app/Contents/MacOS/KVN-Connect status --json || [ $? -eq 1 ]
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
@@ -95,7 +135,11 @@ jobs:
       - name: Package archive (macOS / Linux)
         if: runner.os != 'Windows'
         run: |
-          tar -czf "${{ matrix.artifact }}" -C dist KVN-Connect*
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            tar -czf "${{ matrix.artifact }}" -C dist KVN-Connect.app
+          else
+            tar -czf "${{ matrix.artifact }}" -C dist KVN-Connect
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

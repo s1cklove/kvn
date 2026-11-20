@@ -1,7 +1,9 @@
 """Cross-platform OS helpers (Linux, macOS, Windows) using Python stdlib only."""
 
 import ctypes
+import ntpath
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -23,22 +25,22 @@ def paths(platform=None, env=None, home=None):
     h = home or os.path.expanduser("~")
 
     if plat == "win32":
-        appdata = e.get("APPDATA") or os.path.join(h, "AppData", "Roaming")
-        local = e.get("LOCALAPPDATA") or os.path.join(h, "AppData", "Local")
-        conf = os.path.join(appdata, "kvn")
-        state = os.path.join(local, "kvn")
+        appdata = e.get("APPDATA") or ntpath.join(h, "AppData", "Roaming")
+        local = e.get("LOCALAPPDATA") or ntpath.join(h, "AppData", "Local")
+        conf = ntpath.join(appdata, "kvn")
+        state = ntpath.join(local, "kvn")
         return conf, state, state
 
     if plat == "darwin":
         conf_root = e.get("XDG_CONFIG_HOME")
         state_root = e.get("XDG_STATE_HOME")
-        conf = os.path.join(conf_root, "kvn") if conf_root else os.path.join(h, "Library", "Application Support", "kvn")
-        state = os.path.join(state_root, "kvn") if state_root else os.path.join(h, "Library", "Application Support", "kvn", "state")
+        conf = posixpath.join(conf_root, "kvn") if conf_root else posixpath.join(h, "Library", "Application Support", "kvn")
+        state = posixpath.join(state_root, "kvn") if state_root else posixpath.join(h, "Library", "Application Support", "kvn", "state")
         return conf, state, state
 
     # Linux / other POSIX (XDG)
-    conf = os.path.join(e.get("XDG_CONFIG_HOME") or os.path.join(h, ".config"), "kvn")
-    state = os.path.join(e.get("XDG_STATE_HOME") or os.path.join(h, ".local", "state"), "kvn")
+    conf = posixpath.join(e.get("XDG_CONFIG_HOME") or posixpath.join(h, ".config"), "kvn")
+    state = posixpath.join(e.get("XDG_STATE_HOME") or posixpath.join(h, ".local", "state"), "kvn")
     run = e.get("XDG_RUNTIME_DIR") or state
     return conf, state, run
 

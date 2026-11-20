@@ -48,7 +48,8 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(self.outbound(cfg, "fastest")["outbounds"], ["🇷🇺 Россия"])
 
     def test_only_downloaded_rulesets_are_referenced(self):
-        open(os.path.join(self.rules, "geoip-ru.srs"), "wb").write(b"SRS")
+        with open(os.path.join(self.rules, "geoip-ru.srs"), "wb") as f:
+            f.write(b"SRS")
         cfg = singbox.build_config(dict(DEFAULTS), [NL], "s")
         self.assertEqual([r["tag"] for r in cfg["route"]["rule_set"]], ["geoip-ru"])
 
@@ -62,7 +63,7 @@ class BuildConfigTest(unittest.TestCase):
 class SingBoxAcceptsConfigTest(unittest.TestCase):
     def test_check(self):
         import json
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
             json.dump(singbox.build_config({**DEFAULTS, "bypass_russia": False}, [NL], "s"), f)
         self.addCleanup(os.unlink, f.name)
         ok, err = singbox.check_config(f.name)

@@ -113,7 +113,7 @@ class SingBoxAcceptsChainConfigTest(unittest.TestCase):
             ({**DEFAULTS, "bypass_russia": False, "chain_via": "direct", "chain_port": 10809}, [c1, c2]),
         ]
         for settings, servers in cases:
-            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
                 json.dump(singbox.build_config(settings, [SUB1], "s", chain_servers=servers, chain_on=True), f)
             self.addCleanup(os.unlink, f.name)
             ok, err = singbox.check_config(f.name)
@@ -133,7 +133,7 @@ class ChainCliTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d)
         url_file = os.path.join(d, "chain_url")
         off_file = os.path.join(d, "chain_off")
-        with open(url_file, "w") as f:
+        with open(url_file, "w", encoding="utf-8") as f:
             f.write(VPS1_URL + "\n")
         with mock.patch.object(chain, "CHAIN_URL_FILE", url_file), \
              mock.patch.object(chain, "CHAIN_OFF_FILE", off_file):

@@ -102,7 +102,7 @@ def save_servers(servers, via, expire):
 
 def load_sub_meta():
     try:
-        with open(SUB_META_FILE) as f:
+        with open(SUB_META_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
@@ -111,5 +111,5 @@ def load_sub_meta():
 def get_secret():
     if not os.path.exists(SECRET_FILE):
         write_atomic(SECRET_FILE, secrets.token_hex(16))
-    with open(SECRET_FILE) as f:
+    with open(SECRET_FILE, encoding="utf-8") as f:
         return f.read().strip()
