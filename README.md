@@ -1,103 +1,162 @@
 # kvn
 
 Keeps a local [sing-box](https://sing-box.sagernet.org/) proxy on a
-[BlancVPN](https://blanc.link) subscription alive, so you don't have to babysit
-a VPN client.
+[BlancVPN](https://blanc.link) (or any `vless://` / `ss://`) subscription alive,
+so you don't have to babysit a VPN client.
 
 - Downloads the subscription, turns every server into a sing-box outbound and
-  puts them into a single `urltest` group: traffic always goes through the
-  fastest server that answers — unless the *master* server (Amsterdam by
-  default) is good enough, then it is preferred.
+  puts them into a `urltest` group: traffic always goes through the fastest
+  server that answers — unless the *master* server (Amsterdam by default) is
+  good enough, then it is preferred.
 - Probes the tunnel every 30 s. When it dies, re-downloads the subscription
   (Blanc rotates SNI / short ids), re-tests every server and lets sing-box
   switch over. Tells apart "VPN is down" from "no internet at all".
 - Supervises the sing-box process and restarts it if it crashes.
-- Sends desktop notifications (`notify-send`): tunnel down / back up, server
-  switched, subscription changed, subscription about to expire.
+- Sends native desktop notifications (Linux `notify-send`, macOS Notification
+  Center, Windows toast): tunnel down / back up, server switched, subscription
+  changed, subscription about to expire.
 - Optionally routes Russian sites directly (domain zones + geoip/geosite
   rule-sets), everything else through the VPN.
+- Optional isolated native desktop UI ([`ui/`](ui/README.md)) for users who
+  prefer a window and buttons over a terminal.
 
-It exposes a plain HTTP/SOCKS5 proxy on `127.0.0.1:10808`; point your browser /
-`HTTPS_PROXY` / system proxy settings at it. It is **not** a TUN/system-wide VPN.
+It exposes a plain local HTTP/SOCKS5 proxy on `127.0.0.1:10808` (and optionally
+a chained exit port such as `127.0.0.1:10809`). It is **strictly a local
+proxy** — **not** a TUN or system-wide proxy. You decide which apps use it.
 
-> Unofficial. Not affiliated with BlancVPN. Should work with any
-> v2rayN-style subscription that hands out `vless://` links.
+> Unofficial. Not affiliated with BlancVPN. Works with any v2rayN-style
+> subscription handing out `vless://` or `ss://` links.
 
 ## Requirements
 
-- Linux with systemd (user services). Other platforms are not tested.
-- Python ≥ 3.9 — standard library only, no pip dependencies.
+- **Linux**, **macOS**, or **Windows**
+- Python ≥ 3.9 — core `kvn` uses the **standard library only** (`dependencies = []`).
 - [sing-box](https://sing-box.sagernet.org/installation/package-manager/) ≥ 1.11
   (uses the rule actions syntax; tested with 1.14).
-- `notify-send` (libnotify) and a notification daemon — optional; without it
-  notifications only go to the journal.
-- A BlancVPN subscription URL.
-- Free local ports: `10808` (proxy) and `9095` (sing-box Clash API, localhost
-  only, protected by a random secret). Both can be changed.
+- A subscription URL.
+- Free localhost ports: `10808` (proxy), `9095` (sing-box Clash API), and
+  `9096` (kvn Control API, authenticated with a random Bearer secret). All can
+  be changed.
 
-Supported links: `vless://` with `security` = `none` / `tls` / `reality` and
-transport `tcp` / `ws` / `grpc` / `httpupgrade` / `http`. Anything else is
-skipped and reported by `kvn fetch`.
+Supported links:
+- `vless://` with `security` = `none` / `tls` / `reality` and transport
+  `tcp` / `ws` / `grpc` / `httpupgrade` / `http`.
+- `ss://` (SIP002 / Shadowsocks & Shadowsocks-2022, including `2022-blake3-aes-128-gcm`).
+
+Anything else is skipped and reported by `kvn fetch`.
 
 ## Installation
 
-### 1. Put the subscription URL in place
+### Windows
+
+1. Install `sing-box` and `kvn` (or download a prebuilt **KVN Connect** desktop
+   bundle from GitHub Releases):
+   ```powershell
+   winget install SagerNet.sing-box
+   pipx install git+https://github.com/s1cklove/kvn
+   # or: uv tool install git+https://github.com/s1cklove/kvn
+   ```
+2. Configure your subscription URL, register autostart, and start the daemon:
+   ```powershell
+   kvn init
+   kvn install
+   kvn start
+   kvn status
+   ```
+
+Config lives in `%APPDATA%\kvn\`, state & logs in `%LOCALAPPDATA%\kvn\`.
+
+### macOS
 
 ```sh
-mkdir -p ~/.config/kvn
-install -m 600 /dev/null ~/.config/kvn/sub_url
-$EDITOR ~/.config/kvn/sub_url   # paste the URL, one line
+brew install sing-box
+pipx install git+https://github.com/s1cklove/kvn   # or: uv tool install ...
+
+kvn init        # paste your subscription URL
+kvn install     # installs ~/Library/LaunchAgents/io.github.s1cklove.kvn.plist
+kvn start
+kvn status
 ```
 
-The URL is a credential: keep the file `600` and out of git / the Nix store.
-The service does not start while this file is missing.
+Config lives in `~/Library/Application Support/kvn/`.
 
-### 2a. Any distro (pipx / pip)
+### Linux (Ubuntu / Debian / Arch / etc.)
 
 ```sh
-pipx install git+https://github.com/<you>/kvn
-# or, from a checkout: pipx install .
+# 1. Install sing-box from https://sing-box.sagernet.org/installation/package-manager/
+# 2. Install kvn:
+pipx install git+https://github.com/s1cklove/kvn
 
-kvn fetch --dry-run   # downloads the subscription and validates the config
-
-mkdir -p ~/.config/systemd/user
-cp contrib/systemd/kvn.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now kvn
+kvn init        # saves ~/.config/kvn/sub_url (chmod 600) & validates
+kvn install     # installs & enables ~/.config/systemd/user/kvn.service
+kvn start
+kvn status
 ```
 
-The unit expects the binary at `~/.local/bin/kvn` (pipx default) —
-edit `ExecStart` otherwise. If `sing-box` is not on the service's `PATH`, set
-`KVN_SING_BOX` in the unit (see the comments there).
+To keep it running while logged out: `loginctl enable-linger $USER`.
 
-To keep it running while you're logged out: `loginctl enable-linger $USER`.
-
-### 2b. NixOS / Home Manager (flake)
+### NixOS / Home Manager (flake)
 
 ```nix
 # flake.nix
 inputs.kvn = {
-  url = "github:<you>/kvn";
+  url = "github:s1cklove/kvn";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 
 # home-manager configuration
 { inputs, ... }: {
   imports = [ inputs.kvn.homeManagerModules.default ];
-  services.kvn.enable = true;
-  # services.kvn.settings = { port = 1080; };
+  services.kvn = {
+    enable = true;
+    # settings = { port = 10808; chain_port = 10809; };
+  };
 }
 ```
 
-The package pins `sing-box` and `notify-send` itself. Without flakes:
-`nix build .#default` gives you the binary.
-
-### 3. Use the proxy
+Then save your subscription URL once (keep it `600` and out of git / the Nix store):
 
 ```sh
-export HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808
-curl https://1.1.1.1/cdn-cgi/trace
+kvn init
 ```
+
+The default Nix package (`packages.<system>.default`) is **CLI-only** with zero
+GUI dependencies and pins `sing-box` + `notify-send` automatically.
+
+## Desktop UI (optional & isolated)
+
+`ui/` is a standalone native desktop window (**KVN Connect**, built with
+`pywebview` + optional `pystray` tray icon) that talks to the local daemon over
+`127.0.0.1:9096`. Core `kvn/` does not import or depend on `ui/` in any way.
+
+- **From source / pip:**
+  ```sh
+  pip install "kvn[ui]"   # or from a checkout: pip install -e ".[ui]"
+  python ui/app.py
+  ```
+- **On NixOS:**
+  ```sh
+  nix run github:s1cklove/kvn#kvn-ui
+  ```
+- **Prebuilt binaries:** see GitHub Releases (`kvn-connect-windows-amd64.zip`,
+  `kvn-connect-macos-arm64.tar.gz`, `kvn-connect-linux-amd64.tar.gz`), which
+  bundle `sing-box` inside.
+
+See [ui/README.md](ui/README.md) for details.
+
+## Connecting your apps
+
+`kvn` deliberately never touches your OS system proxy or routing table. Point
+only the apps you want at `127.0.0.1:10808` (mixed HTTP + SOCKS5):
+
+- **Telegram Desktop:** Settings → Advanced → Connection type → Use custom proxy → **SOCKS5**, host `127.0.0.1`, port `10808`.
+- **Browser (Firefox / Chrome / Chromium):** install **FoxyProxy** (or **SwitchyOmega**), add an HTTP or SOCKS5 proxy at `127.0.0.1:10808`, and optionally route only specific domains.
+- **Terminal / CLI tools:**
+  ```sh
+  export HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808
+  curl https://1.1.1.1/cdn-cgi/trace
+  ```
+- **Dedicated chain port (when `chain_port = 10809`):** point apps that need your static exit IP at `127.0.0.1:10809` while everything else stays on `127.0.0.1:10808`.
 
 ## Usage
 
@@ -106,27 +165,31 @@ Start with `kvn status`, it tells which command to run next.
 
 | situation | command |
 |---|---|
-| what's going on? | `kvn status` |
+| first-time setup | `kvn init` — save subscription URL & validate config |
+| install / remove OS autostart | `kvn install`, `kvn uninstall` |
+| what's going on? | `kvn status` (or `kvn status --json`) |
 | sites don't open / it's slow, but the service runs | `kvn connect` — re-test all servers and switch to the best one |
 | I want a specific exit (country), not the fastest | `kvn use <name>` — pin it; `kvn use auto` hands control back |
 | all servers are dead, or Blanc changed the servers | `kvn fetch` — download the subscription now and apply it |
 | sing-box hangs, nothing helps | `kvn restart` |
 | turn the proxy on / off | `kvn start`, `kvn stop` |
 | why? | `kvn logs` |
-| which server is the fastest | `kvn servers` |
+| which server is the fastest | `kvn servers` (or `kvn servers --json`) |
 | prefer the master server / stop preferring it | `kvn master on`, `kvn master off` |
 | route through a second exit (static VPS IP) | `kvn chain on`, `kvn chain off` |
 
 ```
-kvn status                  # service, proxy, current server, subscription age/expiry
+kvn init [URL]              # first-time setup: save sub_url & verify config
+kvn install | uninstall     # register / remove OS autostart (systemd / launchd / Task Scheduler)
+kvn status [--json]         # service, proxy, current server, chain, subscription age/expiry
 kvn connect                 # re-test every server, switch to the fastest live one
 kvn use <name>|auto         # pin one server by hand (substring is enough), or back to auto
 kvn master [on|off]         # show the master server and why it is / isn't used; turn it on / off
 kvn chain [on|off|check]    # optional second exit layer (e.g. personal VPS over the subscription)
 kvn fetch [-n] [-v]         # download the subscription and apply it (-n: only validate, -v: list servers)
-kvn start | stop | restart  # the systemd user service
+kvn start | stop | restart  # start / stop / restart the background daemon
 kvn logs [-n 50] [--no-follow]
-kvn servers                 # every server with its last measured delay
+kvn servers [--json]        # every server with its last measured delay
 kvn run                     # the daemon itself (what the service runs)
 ```
 
@@ -151,12 +214,15 @@ restart`, a crash, `kvn fetch`) resets routing to `auto`.
 
 ## Configuration
 
-Optional `~/.config/kvn/config.json`, any subset of:
+Optional `config.json` in your config directory (`~/.config/kvn/config.json` on
+Linux, `~/Library/Application Support/kvn/config.json` on macOS,
+`%APPDATA%\kvn\config.json` on Windows), any subset of:
 
 | key | default | meaning |
 |---|---|---|
 | `listen`, `port` | `127.0.0.1`, `10808` | where the mixed HTTP/SOCKS proxy listens |
 | `clash_api` | `127.0.0.1:9095` | sing-box Clash API used for health checks |
+| `api_listen`, `api_port` | `127.0.0.1`, `9096` | localhost JSON Control API for CLI & UI (`0` disables) |
 | `user_agent` | `v2rayN/7.10` | UA for the subscription request (decides the format the panel returns) |
 | `sub_interval` | `10800` | routine subscription refresh, seconds |
 | `check_interval` | `30` | tunnel probe period, seconds |
@@ -180,21 +246,23 @@ Optional `~/.config/kvn/config.json`, any subset of:
 Environment: `KVN_SING_BOX`, `KVN_NOTIFY_SEND` (paths to the tools),
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME`.
 
-State (server cache, generated sing-box config, rule-sets, API secret) lives in
-`~/.local/state/kvn/`; deleting it is safe.
+State (server cache, generated sing-box config, rule-sets, API secret, log file)
+lives in `~/.local/state/kvn/` (Linux), `~/Library/Application Support/kvn/state/`
+(macOS), or `%LOCALAPPDATA%\kvn\` (Windows); deleting it is safe.
 
 ## Chain exit layer (`kvn chain`)
 
 To keep a stable personal exit IP (e.g. your own VPS) on top of the subscription
 — inside the **same** `kvn` daemon and without a second service — put one or
-more `ss://...` or `vless://...` links into `~/.config/kvn/chain_url` (`chmod 600`,
-out of git / the Nix store). Shadowsocks-2022 (`ss://2022-blake3-aes-128-gcm:...`)
-is recommended for chaining over a subscription because it avoids TLS-in-TLS
-overhead and cannot be hijacked by upstream TLS sniffing:
+more `ss://...` or `vless://...` links into `chain_url` in your config directory
+(`chmod 600`, out of git / the Nix store). Shadowsocks-2022
+(`ss://2022-blake3-aes-128-gcm:...`) is recommended for chaining over a
+subscription because it avoids TLS-in-TLS overhead and cannot be hijacked by
+upstream TLS sniffing:
 
 ```sh
 install -m 600 /dev/null ~/.config/kvn/chain_url
-$EDITOR ~/.config/kvn/chain_url   # paste your vless://... link
+$EDITOR ~/.config/kvn/chain_url   # paste your ss:// or vless:// link
 kvn chain check                   # parse link and validate the full sing-box config
 kvn restart                       # load the chain layer
 kvn chain                         # show route and probe latency
@@ -238,7 +306,7 @@ doesn't touch `config.json`, so it works with the Home Manager module too.
 ## Development
 
 ```sh
-python -m unittest discover -s tests   # sing-box on PATH enables the config check test
+python -m unittest discover -s tests -v   # sing-box on PATH enables the config check test
 python -m kvn fetch --dry-run
 ```
 
