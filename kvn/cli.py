@@ -370,6 +370,8 @@ def cmd_run(settings, args):
 # ---------------------------------------------------------------- chain command
 
 def _server_kind(server):
+    if server.get("type") == "shadowsocks":
+        return "ss"
     return "reality" if server.get("tls", {}).get("reality") else "tls" if server.get("tls") else "plain"
 
 

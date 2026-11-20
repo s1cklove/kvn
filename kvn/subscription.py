@@ -7,7 +7,7 @@ import urllib.parse
 from .net import http_get
 from .settings import SUB_URL_FILE
 
-RESERVED_TAGS = {"auto", "direct", "mixed-in"}
+RESERVED_TAGS = {"auto", "chain", "chain-in", "direct", "fastest", "mixed-in", "out", "select"}
 
 
 class Unsupported(Exception):
@@ -92,7 +92,60 @@ def parse_vless(uri):
     return out
 
 
-PARSERS = {"vless": parse_vless}
+def _b64decode(s):
+    s = re.sub(r"\s+", "", s)
+    s += "=" * (-len(s) % 4)
+    return base64.b64decode(s.replace("-", "+").replace("_", "/")).decode("utf-8", "strict")
+
+
+def parse_ss(uri):
+    """Parses SIP002 (`ss://userinfo@host:port#tag`) and legacy `ss://base64#tag` URIs."""
+    u = urllib.parse.urlsplit(uri)
+    tag = urllib.parse.unquote(u.fragment).strip()
+    if "@" in u.netloc:
+        host, port = u.hostname, u.port
+        raw_user = u.netloc.rsplit("@", 1)[0]
+        if ":" in raw_user:
+            method, password = (urllib.parse.unquote(p) for p in raw_user.split(":", 1))
+        else:
+            try:
+                decoded = _b64decode(urllib.parse.unquote(raw_user))
+            except (ValueError, UnicodeDecodeError) as e:
+                raise Unsupported(f"bad ss userinfo: {e}")
+            if ":" not in decoded:
+                raise Unsupported("ss userinfo missing method:password")
+            method, password = decoded.split(":", 1)
+    else:
+        try:
+            decoded = _b64decode(urllib.parse.unquote(u.netloc))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise Unsupported(f"bad legacy ss uri: {e}")
+        if "@" not in decoded or ":" not in decoded:
+            raise Unsupported("malformed legacy ss uri")
+        userinfo, hostport = decoded.rsplit("@", 1)
+        if ":" not in userinfo:
+            raise Unsupported("ss userinfo missing method:password")
+        method, password = userinfo.split(":", 1)
+        hp = urllib.parse.urlsplit(f"ss://{hostport}")
+        host, port = hp.hostname, hp.port
+
+    if not host or not port or not method or not password:
+        raise Unsupported("missing ss host/port/method/password")
+    q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
+    if q.get("plugin"):
+        raise Unsupported(f"ss plugin={q['plugin'].split(';', 1)[0]}")
+
+    return {
+        "type": "shadowsocks",
+        "tag": tag or f"{host}:{port}",
+        "server": host,
+        "server_port": port,
+        "method": method,
+        "password": password,
+    }
+
+
+PARSERS = {"vless": parse_vless, "ss": parse_ss}
 
 
 def parse_subscription(body):
@@ -139,7 +192,7 @@ def fetch_subscription(settings, proxies):
     raise OSError("; ".join(errors))
 
 
-IDENTITY_FIELDS = ("tag", "server", "server_port", "uuid", "flow")
+IDENTITY_FIELDS = ("type", "tag", "server", "server_port", "uuid", "flow", "method")
 
 
 def servers_digest(servers, full=True):

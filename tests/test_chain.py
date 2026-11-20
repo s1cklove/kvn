@@ -7,13 +7,14 @@ from unittest import mock
 
 from kvn import chain, cli, singbox
 from kvn.settings import DEFAULTS
-from kvn.subscription import parse_vless
+from kvn.subscription import parse_ss, parse_vless
 
 UUID = "11111111-2222-3333-4444-555555555555"
 PBK = "SGVsbG9IZWxsb0hlbGxvSGVsbG9IZWxsb0hlbGxvMDA"
 SUB1 = parse_vless(f"vless://{UUID}@nl.example.net:443?security=reality&pbk={PBK}&sid=01&sni=a.com#🇳🇱 NL")
 VPS1_URL = f"vless://{UUID}@203.0.113.10:443?type=tcp&encryption=none&security=reality&pbk={PBK}&fp=chrome&sni=yahoo.com&sid=9a&flow=xtls-rprx-vision#vps-nixos"
 VPS2_URL = f"vless://{UUID}@203.0.113.11:443?type=raw&encryption=none&security=reality&pbk={PBK}&fp=chrome&sni=yahoo.com&sid=ab&flow=xtls-rprx-vision#vps-backup"
+SS_URL = "ss://2022-blake3-aes-128-gcm:4abaSwgjMo0%2BrLX%2BpI4%2BEQ%3D%3D@203.0.113.10:8443#vps-ss"
 
 
 class LoadChainServersTest(unittest.TestCase):
@@ -104,11 +105,11 @@ class BuildChainConfigTest(unittest.TestCase):
 @unittest.skipUnless(shutil.which(singbox.SING_BOX), "sing-box not installed")
 class SingBoxAcceptsChainConfigTest(unittest.TestCase):
     def test_all_modes_accepted(self):
-        c1, c2 = parse_vless(VPS1_URL), parse_vless(VPS2_URL)
+        c1, c2, ss = parse_vless(VPS1_URL), parse_vless(VPS2_URL), parse_ss(SS_URL)
         cases = [
             ({**DEFAULTS, "bypass_russia": False, "chain_via": "chain", "chain_port": None}, [c1]),
-            ({**DEFAULTS, "bypass_russia": False, "chain_via": "chain", "chain_port": 10809}, [c1]),
-            ({**DEFAULTS, "bypass_russia": False, "chain_via": "auto", "chain_port": 10809}, [c1]),
+            ({**DEFAULTS, "bypass_russia": False, "chain_via": "chain", "chain_port": 10809}, [ss]),
+            ({**DEFAULTS, "bypass_russia": False, "chain_via": "auto", "chain_port": 10809}, [ss]),
             ({**DEFAULTS, "bypass_russia": False, "chain_via": "direct", "chain_port": 10809}, [c1, c2]),
         ]
         for settings, servers in cases:

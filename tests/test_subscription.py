@@ -2,7 +2,7 @@ import base64
 import unittest
 
 from kvn.subscription import (
-    Unsupported, decode_subscription, parse_subscription, parse_vless, servers_digest, subscription_expiry,
+    Unsupported, decode_subscription, parse_ss, parse_subscription, parse_vless, servers_digest, subscription_expiry,
 )
 
 UUID = "11111111-2222-3333-4444-555555555555"
@@ -37,6 +37,35 @@ class VlessTest(unittest.TestCase):
     def test_reality_without_key_is_rejected(self):
         with self.assertRaises(Unsupported):
             parse_vless(f"vless://{UUID}@h:443?security=reality#x")
+
+
+class ShadowsocksTest(unittest.TestCase):
+    def test_sip002_plain_ss2022(self):
+        ob = parse_ss("ss://2022-blake3-aes-128-gcm:4abaSwgjMo0%2BrLX%2BpI4%2BEQ%3D%3D@203.0.113.10:8443#vps-ss")
+        self.assertEqual(ob, {
+            "type": "shadowsocks",
+            "tag": "vps-ss",
+            "server": "203.0.113.10",
+            "server_port": 8443,
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "4abaSwgjMo0+rLX+pI4+EQ==",
+        })
+
+    def test_sip002_base64_userinfo(self):
+        userinfo = base64.urlsafe_b64encode(b"2022-blake3-aes-128-gcm:4abaSwgjMo0+rLX+pI4+EQ==").rstrip(b"=").decode()
+        ob = parse_ss(f"ss://{userinfo}@203.0.113.10:8443#vps-b64")
+        self.assertEqual(ob["method"], "2022-blake3-aes-128-gcm")
+        self.assertEqual(ob["password"], "4abaSwgjMo0+rLX+pI4+EQ==")
+        self.assertEqual(ob["tag"], "vps-b64")
+
+    def test_legacy_base64(self):
+        blob = base64.urlsafe_b64encode(b"aes-256-gcm:secret@203.0.113.10:8388").rstrip(b"=").decode()
+        ob = parse_ss(f"ss://{blob}#legacy")
+        self.assertEqual((ob["method"], ob["password"], ob["server"], ob["server_port"]), ("aes-256-gcm", "secret", "203.0.113.10", 8388))
+
+    def test_plugin_rejected(self):
+        with self.assertRaises(Unsupported):
+            parse_ss("ss://aes-256-gcm:secret@203.0.113.10:8388?plugin=v2ray-plugin#x")
 
 
 class ParseSubscriptionTest(unittest.TestCase):

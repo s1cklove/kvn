@@ -187,8 +187,10 @@ State (server cache, generated sing-box config, rule-sets, API secret) lives in
 
 To keep a stable personal exit IP (e.g. your own VPS) on top of the subscription
 — inside the **same** `kvn` daemon and without a second service — put one or
-more `vless://...` links into `~/.config/kvn/chain_url` (`chmod 600`, out of git
-/ the Nix store):
+more `ss://...` or `vless://...` links into `~/.config/kvn/chain_url` (`chmod 600`,
+out of git / the Nix store). Shadowsocks-2022 (`ss://2022-blake3-aes-128-gcm:...`)
+is recommended for chaining over a subscription because it avoids TLS-in-TLS
+overhead and cannot be hijacked by upstream TLS sniffing:
 
 ```sh
 install -m 600 /dev/null ~/.config/kvn/chain_url
