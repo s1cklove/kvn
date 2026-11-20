@@ -38,6 +38,23 @@ class Clash:
         """Point automatic routing at 'fastest' (urltest) or the master server tag."""
         self.put("/proxies/auto", {"name": name})
 
+    def out_selector(self):
+        """Top-level chain selector ('out'): now is 'select' or the chain target."""
+        return self.get("/proxies/out")
+
+    def select_out(self, name):
+        """Point 'out' at 'select' (subscription only) or the chain target."""
+        self.put("/proxies/out", {"name": name})
+
+    def chain_current(self):
+        """Active chain outbound tag when chain is enabled, or None if bypassed/unconfigured."""
+        now = self.out_selector().get("now")
+        if not now or now == "select":
+            return None
+        if now == "chain":
+            return self.get("/proxies/chain").get("now")
+        return now
+
     def current(self):
         """The server traffic actually goes through."""
         sel = self.selector().get("now")

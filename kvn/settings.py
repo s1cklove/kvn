@@ -2,7 +2,7 @@
 
 Files:
   $XDG_CONFIG_HOME/kvn/sub_url       subscription URL (secret, chmod 600)
-  $XDG_CONFIG_HOME/kvn/vps_url       standalone VPS link(s) for `kvn vps` (secret, chmod 600)
+  $XDG_CONFIG_HOME/kvn/chain_url     optional chain exit link(s) for `kvn chain` (secret, chmod 600)
   $XDG_CONFIG_HOME/kvn/config.json   optional overrides of DEFAULTS
   $XDG_STATE_HOME/kvn/               servers cache, generated config, rule-sets
 """
@@ -48,9 +48,11 @@ DEFAULTS = {
         "geosite-ru-available-only-inside": "https://testingcf.jsdelivr.net/gh/runetfreedom/russia-v2ray-rules-dat@release/sing-box/rule-set-geosite/geosite-ru-available-only-inside.srs",
     },
     "expire_warn_days": 3,
-    "vps_listen": "127.0.0.1",
-    "vps_port": 10809,
-    "vps_bypass_russia": True,
+    # Optional chain exit layer (`kvn chain`, configured via ~/.config/kvn/chain_url):
+    # chain_via: "chain" (detour through subscription), "auto" (urltest direct vs chained), or "direct".
+    # chain_port: None toggles the main port on/off; an int (e.g. 10809) opens a dedicated port for the chain.
+    "chain_via": "chain",
+    "chain_port": None,
 }
 SING_BOX = os.environ.get("KVN_SING_BOX", "sing-box")
 NOTIFY_SEND = os.environ.get("KVN_NOTIFY_SEND", "notify-send")
@@ -58,18 +60,18 @@ CONF_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/
 STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "kvn")
 RUN_DIR = os.environ.get("XDG_RUNTIME_DIR", STATE_DIR)
 SUB_URL_FILE = os.path.join(CONF_DIR, "sub_url")
-VPS_URL_FILE = os.path.join(CONF_DIR, "vps_url")
+CHAIN_URL_FILE = os.path.join(CONF_DIR, "chain_url")
 SERVERS_FILE = os.path.join(STATE_DIR, "servers.json")
 #: when / how the subscription was last fetched and when it expires (for `kvn status`)
 SUB_META_FILE = os.path.join(STATE_DIR, "subscription.json")
 BOX_CONFIG = os.path.join(STATE_DIR, "config.json")
-VPS_BOX_CONFIG = os.path.join(STATE_DIR, "vps.config.json")
 SECRET_FILE = os.path.join(STATE_DIR, "clash_secret")
 RULES_DIR = os.path.join(STATE_DIR, "rules")
 #: exists while `kvn master off` is in effect
 MASTER_OFF_FILE = os.path.join(STATE_DIR, "master_off")
+#: exists while `kvn chain off` is in effect
+CHAIN_OFF_FILE = os.path.join(STATE_DIR, "chain_off")
 PID_FILE = os.path.join(RUN_DIR, "kvn.pid")
-VPS_PID_FILE = os.path.join(RUN_DIR, "kvn-vps.pid")
 
 
 def load_settings():

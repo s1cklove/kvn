@@ -115,12 +115,14 @@ Start with `kvn status`, it tells which command to run next.
 | why? | `kvn logs` |
 | which server is the fastest | `kvn servers` |
 | prefer the master server / stop preferring it | `kvn master on`, `kvn master off` |
+| route through a second exit (static VPS IP) | `kvn chain on`, `kvn chain off` |
 
 ```
 kvn status                  # service, proxy, current server, subscription age/expiry
 kvn connect                 # re-test every server, switch to the fastest live one
 kvn use <name>|auto         # pin one server by hand (substring is enough), or back to auto
 kvn master [on|off]         # show the master server and why it is / isn't used; turn it on / off
+kvn chain [on|off|check]    # optional second exit layer (e.g. personal VPS over the subscription)
 kvn fetch [-n] [-v]         # download the subscription and apply it (-n: only validate, -v: list servers)
 kvn start | stop | restart  # the systemd user service
 kvn logs [-n 50] [--no-follow]
@@ -172,8 +174,8 @@ Optional `~/.config/kvn/config.json`, any subset of:
 | `rulesets` | hiddify / MetaCubeX / runetfreedom | rule-sets for the bypass, name → `.srs` URL |
 | `notify_switch` | `true` | notify when urltest changes the server |
 | `expire_warn_days` | `3` | warn this many days before the subscription expires |
-| `vps_listen`, `vps_port` | `127.0.0.1`, `10809` | where the standalone `kvn vps` proxy listens |
-| `vps_bypass_russia` | `true` | route RU domains / IPs directly in `kvn vps` |
+| `chain_via` | `"chain"` | how `kvn chain` reaches the exit: `"chain"` (detour via subscription), `"auto"` (`urltest` direct vs chained), or `"direct"` |
+| `chain_port` | `null` | `null` toggles the main port (`10808`); a port number (e.g. `10809`) opens a dedicated chained proxy port inside the same sing-box |
 
 Environment: `KVN_SING_BOX`, `KVN_NOTIFY_SEND` (paths to the tools),
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME`.
@@ -181,29 +183,29 @@ Environment: `KVN_SING_BOX`, `KVN_NOTIFY_SEND` (paths to the tools),
 State (server cache, generated sing-box config, rule-sets, API secret) lives in
 `~/.local/state/kvn/`; deleting it is safe.
 
-## Standalone VPS (`kvn vps`)
+## Chain exit layer (`kvn chain`)
 
-To keep a separate local proxy for your own VPS (independent of the subscription
-daemon and on its own port `127.0.0.1:10809`), put one or more `vless://...`
-links into `~/.config/kvn/vps_url` (`chmod 600`, out of git / the Nix store):
+To keep a stable personal exit IP (e.g. your own VPS) on top of the subscription
+— inside the **same** `kvn` daemon and without a second service — put one or
+more `vless://...` links into `~/.config/kvn/chain_url` (`chmod 600`, out of git
+/ the Nix store):
 
 ```sh
-install -m 600 /dev/null ~/.config/kvn/vps_url
-$EDITOR ~/.config/kvn/vps_url   # paste your vless://... link
-kvn vps check                   # parse link and validate sing-box config
-kvn vps start                   # start the kvn-vps user service
-kvn vps status                  # check proxy status and latency
+install -m 600 /dev/null ~/.config/kvn/chain_url
+$EDITOR ~/.config/kvn/chain_url   # paste your vless://... link
+kvn chain check                   # parse link and validate the full sing-box config
+kvn restart                       # load the chain layer
+kvn chain                         # show route and probe latency
 ```
 
-Commands: `kvn vps [status | start | stop | restart | check | logs | run]`.
-
-- Uses its own systemd user unit (`kvn-vps.service`, installed automatically by
-  the Home Manager module when `services.kvn.enable = true`).
-- By default `kvn-vps` is on-demand (`kvn vps start` / `kvn vps stop`); set
-  `services.kvn.vps.autoStart = true` in Home Manager to start it on login.
-- Exposes a mixed HTTP/SOCKS5 proxy on `127.0.0.1:10809` (no TUN/system-wide
-  routing), so you can point only the apps you want at it while `kvn` keeps
-  running on `127.0.0.1:10808`.
+- By default (`chain_via = "chain"`), traffic reaches your exit through the
+  active subscription server (`detour: "select"`): the subscription handles ISP
+  rotation/recovery while external sites always see your static exit IP.
+- With `chain_port = null` (default), `kvn chain on` / `kvn chain off` toggles
+  the chain layer on the main `127.0.0.1:10808` proxy on the fly (no restart;
+  state is persisted in `chain_off`).
+- With `chain_port = 10809`, `127.0.0.1:10808` stays on the subscription while
+  `127.0.0.1:10809` routes through the chain — still one `sing-box` process.
 
 ## Master server
 

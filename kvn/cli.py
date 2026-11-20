@@ -4,12 +4,12 @@
   connect         re-test all servers now and switch to the best one
   use             pin one server by hand, or `use auto` to hand control back to the watchdog
   master          show / turn on / turn off preferring the master server
+  chain           show / toggle / validate the optional chain exit layer (e.g. personal VPS)
   fetch           download the subscription now and apply it
   start/stop/restart
                   control the background service (systemd user unit)
   logs            follow the service log
   servers         every server with its last measured delay
-  vps             manage the standalone VPS proxy (status/start/stop/restart/check/logs/run)
   run             the daemon itself (what the service runs)
 """
 
@@ -24,13 +24,13 @@ import subprocess
 import sys
 import time
 
-from . import __version__, master, vps
+from . import __version__, chain, master
 from .clash import Clash, top_list
 from .daemon import Watchdog
 from .net import probe
 from .settings import (
-    PID_FILE, STATE_DIR, SUB_URL_FILE, VPS_URL_FILE, get_secret, load_settings, load_sub_meta, save_servers,
-    write_atomic,
+    CHAIN_URL_FILE, PID_FILE, SERVERS_FILE, STATE_DIR, SUB_URL_FILE, get_secret, load_settings, load_sub_meta,
+    save_servers, write_atomic,
 )
 from .singbox import build_config, check_config
 from .subscription import fetch_subscription, subscription_expiry
@@ -96,13 +96,36 @@ def cmd_status(settings, args):
             sel = clash.selector().get("now")
             if sel and sel != "auto":
                 delay = clash.last_delay(sel)
-                print(f"server        {sel}{f'  ({delay} ms)' if delay else ''}  (pinned → kvn use auto)")
+                sub_str = f"{sel}{f'  ({delay} ms)' if delay else ''}  (pinned → kvn use auto)"
             else:
                 auto_sel = clash.auto_selected()
                 now = clash.current()
                 delay = clash.last_delay(now) if now else 0
                 how = "master" if auto_sel != "fastest" else "auto"
-                print(f"server        {now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}  ({how})")
+                sub_str = f"{now or 'still choosing'}{f'  ({delay} ms)' if delay else ''}  ({how})"
+            print(f"server        {sub_str}")
+            if chain.configured():
+                try:
+                    c_now = clash.chain_current()
+                except OSError:
+                    c_now = None
+                if settings.get("chain_port"):
+                    c_host, c_port = settings["listen"], settings["chain_port"]
+                    if c_now:
+                        ms = chain.probe_latency(settings["probe_urls"], chain.chain_proxy_url(settings))
+                        c_status = f"works ({ms} ms)" if ms else "NOT working  → kvn chain"
+                        print(f"chain         {c_host}:{c_port}  {c_status}  → {chain.display_tag(c_now)}")
+                    elif chain.enabled():
+                        print(f"chain         {c_host}:{c_port}  pending restart  → kvn restart")
+                    else:
+                        print(f"chain         {c_host}:{c_port}  off (direct to subscription)  → kvn chain on")
+                else:
+                    if c_now:
+                        print(f"chain         on  → {chain.display_tag(c_now)}  (via {settings['chain_via']})")
+                    elif chain.enabled():
+                        print("chain         pending restart  → kvn restart")
+                    else:
+                        print("chain         off  → kvn chain on")
         except OSError:
             print("server        unknown, sing-box is not answering  → kvn restart")
 
@@ -224,7 +247,9 @@ def cmd_fetch(settings, args):
 
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     path = os.path.join(STATE_DIR, "config.check.json")
-    write_atomic(path, json.dumps(build_config(settings, servers, "check"), ensure_ascii=False))
+    cfg = build_config(settings, servers, "check",
+                       chain_servers=chain.load_optional_servers(), chain_on=chain.enabled())
+    write_atomic(path, json.dumps(cfg, ensure_ascii=False))
     ok, err = check_config(path)
     os.unlink(path)
     if not ok:
@@ -342,127 +367,109 @@ def cmd_run(settings, args):
     return 0
 
 
-# ---------------------------------------------------------------- vps commands
+# ---------------------------------------------------------------- chain command
 
-def _vps_kind(server):
+def _server_kind(server):
     return "reality" if server.get("tls", {}).get("reality") else "tls" if server.get("tls") else "plain"
 
 
-def cmd_vps_status(settings, args):
-    host, port = settings["vps_listen"], settings["vps_port"]
-    pid = vps.vps_pid()
-    listening = vps.port_open(host, port, timeout=0.5)
-    if pid:
-        svc = f"running (pid {pid})"
-    elif listening:
-        svc = "running (port open)"
-    else:
-        svc = "not running  → kvn vps start"
-    print(f"service       {svc}")
-
-    if pid or listening:
-        ms = vps.probe_latency(settings["probe_urls"], vps.vps_proxy_url(settings))
-        status = f"works ({ms} ms)" if ms else "NOT working  → kvn vps logs"
-        print(f"proxy         {host}:{port}  {status}")
-    else:
-        print(f"proxy         {host}:{port}  (stopped)")
-
-    if not os.path.exists(VPS_URL_FILE):
-        print(f"config        missing  → put vless://... into {VPS_URL_FILE}")
-        return 0
+def _cmd_chain_check(settings):
+    if not os.path.exists(CHAIN_URL_FILE):
+        return fail(f"no chain exit link in {CHAIN_URL_FILE}",
+                    "create it (chmod 600) with a vless://... line")
     try:
-        servers, skipped = vps.load_vps_servers()
+        c_servers, skipped = chain.load_chain_servers(CHAIN_URL_FILE)
     except (OSError, ValueError) as e:
-        print(f"config        invalid ({e})  → kvn vps check")
-        return 0
-    if len(servers) == 1:
-        s = servers[0]
-        print(f"server        {s['tag']}  ({s['server']}:{s['server_port']}, {_vps_kind(s)})")
-    else:
-        tags = ", ".join(s["tag"] for s in servers)
-        print(f"servers       {len(servers)} ({tags})")
-    if skipped:
-        print("skipped       " + ", ".join(f"{k} ×{n}" for k, n in skipped.items()))
-    return 0
-
-
-def cmd_vps_check(settings, args):
-    if not os.path.exists(VPS_URL_FILE):
-        return fail(f"no VPS link in {VPS_URL_FILE}",
-                    f"create it (chmod 600) with a vless://... line")
-    try:
-        servers, skipped, tmp = vps.prepare_vps_config(settings)
-    except (OSError, ValueError, RuntimeError) as e:
         return fail(str(e))
-    os.unlink(tmp)
-    print(f"loaded {len(servers)} server(s) from {VPS_URL_FILE}:")
-    for s in servers:
-        print(f"  {_vps_kind(s):<7} {s.get('transport', {}).get('type', 'tcp'):<11} {s['tag']}  ({s['server']}:{s['server_port']})")
+
+    sub_servers = []
+    if os.path.exists(SERVERS_FILE):
+        try:
+            with open(SERVERS_FILE) as f:
+                sub_servers = json.load(f)
+        except (OSError, ValueError):
+            sub_servers = []
+    # Need at least one subscription server to validate the full chained config.
+    if not sub_servers:
+        sub_servers = [dict(c_servers[0], tag="sub-placeholder")]
+
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(STATE_DIR, "config.chain-check.json")
+    try:
+        cfg = build_config(settings, sub_servers, "check", chain_servers=c_servers, chain_on=True)
+    except ValueError as e:
+        return fail(str(e))
+    write_atomic(path, json.dumps(cfg, ensure_ascii=False))
+    ok, err = check_config(path)
+    os.unlink(path)
+    if not ok:
+        return fail(f"sing-box rejects the generated config:\n{err}")
+
+    print(f"loaded {len(c_servers)} chain server(s) from {CHAIN_URL_FILE}:")
+    for s in c_servers:
+        print(f"  {_server_kind(s):<7} {s.get('transport', {}).get('type', 'tcp'):<11} {s['tag']}  ({s['server']}:{s['server_port']})")
     if skipped:
         print("skipped:", ", ".join(f"{k} ×{n}" for k, n in skipped.items()))
-    print(f"proxy:  {settings['vps_listen']}:{settings['vps_port']}  (bypass_russia={'on' if settings['vps_bypass_russia'] else 'off'})")
+    port_info = (f"{settings['listen']}:{settings['chain_port']} (dedicated)"
+                 if settings.get("chain_port")
+                 else f"{settings['listen']}:{settings['port']} (shared)")
+    print(f"mode:   via={settings['chain_via']}, port={port_info}")
     print("config OK")
     return 0
 
 
-def vps_service_cmd(action):
-    def run(settings, args):
-        if action in ("start", "restart") and not os.path.exists(VPS_URL_FILE):
-            return fail(f"no VPS link in {VPS_URL_FILE}",
-                        "put your vless://... link there (chmod 600) first")
-        try:
-            r = systemctl(action, vps.VPS_SERVICE)
-        except OSError as e:
-            return fail(str(e))
-        if r.returncode != 0:
-            return fail(f"systemctl --user {action} {vps.VPS_SERVICE} failed", "see: kvn vps logs")
-        if action == "stop":
-            print("stopped; the VPS proxy is down until: kvn vps start")
-            return 0
-        host, port = settings["vps_listen"], settings["vps_port"]
-        for _ in range(30):
-            if vps.port_open(host, port, timeout=0.5):
-                print(f"{action}ed; proxy on {host}:{port}; check with: kvn vps status")
-                return 0
-            time.sleep(0.5)
-        return fail("the service started but the VPS proxy port is not listening yet", "see: kvn vps logs")
-    return run
+def cmd_chain(settings, args):
+    if args.action == "check":
+        return _cmd_chain_check(settings)
 
+    if not os.path.exists(CHAIN_URL_FILE):
+        return fail(f"no chain exit configured ({CHAIN_URL_FILE})",
+                    "put a vless://... link there (chmod 600), then run: kvn restart")
 
-def cmd_vps_logs(settings, args):
-    if not shutil.which("journalctl"):
-        return fail("journalctl not found")
-    cmd = ["journalctl", "--user", "-u", vps.VPS_SERVICE, "-n", str(args.lines)]
-    if not args.no_follow:
-        cmd.append("-f")
+    if args.action in ("on", "off"):
+        chain.set_enabled(args.action == "on")
+
+    on = chain.enabled()
+    port_info = (f"{settings['listen']}:{settings['chain_port']} (dedicated)"
+                 if settings.get("chain_port")
+                 else f"{settings['listen']}:{settings['port']} (shared)")
+    print(f"chain         {'on' if on else 'off'}, via {settings['chain_via']}, port {port_info}")
+
     try:
-        return subprocess.run(cmd).returncode
-    except KeyboardInterrupt:
+        c_servers, skipped = chain.load_chain_servers(CHAIN_URL_FILE)
+    except (OSError, ValueError) as e:
+        return fail(f"invalid {CHAIN_URL_FILE} ({e})", "see: kvn chain check")
+    if len(c_servers) == 1:
+        s = c_servers[0]
+        print(f"exit          {s['tag']}  ({s['server']}:{s['server_port']}, {_server_kind(s)})")
+    else:
+        print(f"exits         {len(c_servers)} ({', '.join(s['tag'] for s in c_servers)})")
+    if skipped:
+        print("skipped       " + ", ".join(f"{k} ×{n}" for k, n in skipped.items()))
+
+    if not daemon_pid():
+        print("service       not running  → kvn start")
         return 0
 
-
-def cmd_vps_run(settings, args):
-    if not os.path.exists(VPS_URL_FILE):
-        return fail(f"no VPS link in {VPS_URL_FILE}")
+    clash = clash_for(settings)
     try:
-        vps.run_vps(settings)
-    except (OSError, ValueError, RuntimeError) as e:
-        return fail(str(e))
+        if args.action in ("on", "off"):
+            chain.steer(clash)
+        c_now = clash.chain_current()
+        sub_now = clash.current()
+    except OSError:
+        print("service       running without chain loaded  → kvn restart")
+        return 0
+
+    if c_now:
+        route = f"{sub_now} → {chain.display_tag(c_now)}" if settings["chain_via"] != "direct" else chain.display_tag(c_now)
+        print(f"route         {route}")
+        ms = chain.probe_latency(settings["probe_urls"], chain.chain_proxy_url(settings))
+        status = f"works ({ms} ms)" if ms else "NOT working  → kvn logs"
+        print(f"probe         {chain.chain_proxy_url(settings)}  {status}")
+    else:
+        print(f"route         {sub_now or 'still choosing'}  (chain off)")
     return 0
-
-
-def cmd_vps(settings, args):
-    handlers = {
-        None: cmd_vps_status,
-        "status": cmd_vps_status,
-        "check": cmd_vps_check,
-        "start": vps_service_cmd("start"),
-        "stop": vps_service_cmd("stop"),
-        "restart": vps_service_cmd("restart"),
-        "logs": cmd_vps_logs,
-        "run": cmd_vps_run,
-    }
-    return handlers[args.vps_cmd](settings, args)
 
 
 # ---------------------------------------------------------------- entry point
@@ -481,6 +488,8 @@ def main(argv=None):
     u.add_argument("server", metavar="SERVER|auto", help="server name (a substring is enough) or 'auto'")
     m = sub.add_parser("master", help="prefer the master server while it's good enough (on/off), or show it")
     m.add_argument("state", nargs="?", choices=["on", "off"])
+    ch = sub.add_parser("chain", help="optional chain exit layer on top of the subscription (on/off/check)")
+    ch.add_argument("action", nargs="?", choices=["on", "off", "check"])
     f = sub.add_parser("fetch", help="download the subscription now and apply it")
     f.add_argument("-n", "--dry-run", action="store_true", help="only download and validate")
     f.add_argument("-v", "--verbose", action="store_true", help="list every server")
@@ -491,24 +500,13 @@ def main(argv=None):
     lg.add_argument("-n", "--lines", type=int, default=50)
     lg.add_argument("--no-follow", action="store_true")
     sub.add_parser("servers", help="every server with its last measured delay")
-    vp = sub.add_parser("vps", help="standalone VPS proxy (separate from the subscription service)")
-    vsub = vp.add_subparsers(dest="vps_cmd", metavar="action")
-    vsub.add_parser("status", help="is kvn-vps running, does the proxy work, latency")
-    vsub.add_parser("start", help="start the kvn-vps user service")
-    vsub.add_parser("stop", help="stop the kvn-vps user service")
-    vsub.add_parser("restart", help="restart the kvn-vps user service")
-    vsub.add_parser("check", help="validate ~/.config/kvn/vps_url and generated sing-box config")
-    vlg = vsub.add_parser("logs", help="follow the kvn-vps service log")
-    vlg.add_argument("-n", "--lines", type=int, default=50)
-    vlg.add_argument("--no-follow", action="store_true")
-    vsub.add_parser("run", help="run the VPS sing-box proxy in the foreground (what kvn-vps.service runs)")
     sub.add_parser("run", help="run the daemon in the foreground (what the service runs)")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     handlers = {
-        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master, "fetch": cmd_fetch,
-        "logs": cmd_logs, "servers": cmd_servers, "vps": cmd_vps, "run": cmd_run,
+        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master, "chain": cmd_chain,
+        "fetch": cmd_fetch, "logs": cmd_logs, "servers": cmd_servers, "run": cmd_run,
         "start": service_cmd("start"), "stop": service_cmd("stop"), "restart": service_cmd("restart"),
     }
     try:

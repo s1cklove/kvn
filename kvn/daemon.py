@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 
-from . import master
+from . import chain, master
 from .clash import Clash, top_list
 from .net import probe
 from .notify import notify
@@ -44,19 +44,24 @@ class Watchdog:
 
     # -- sing-box process
 
-    def port_free(self):
+    def port_free(self, port=None):
+        p = self.s["port"] if port is None else port
         try:
             with socket.socket() as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind((self.s["listen"], self.s["port"]))
+                sock.bind((self.s["listen"], p))
             return True
         except OSError:
             return False
 
     def start_box(self):
-        if not self.port_free():
+        needed = [self.s["port"]]
+        if self.s.get("chain_port") and chain.load_optional_servers():
+            needed.append(self.s["chain_port"])
+        busy = [p for p in needed if not self.port_free(p)]
+        if busy:
             if not self.box_error_notified:
-                notify("Proxy port is busy", f"Port {self.s['port']} is taken, probably by another VPN client. Stop it and run: kvn restart",
+                notify("Proxy port is busy", f"Port {busy[0]} is taken, probably by another VPN client. Stop it and run: kvn restart",
                        "critical", "network-vpn-disconnected")
                 self.box_error_notified = True
             return False
@@ -87,7 +92,12 @@ class Watchdog:
 
     def apply_config(self):
         """Writes config for current servers; restarts sing-box only if config changed."""
-        cfg = json.dumps(build_config(self.s, self.servers, self.clash.secret), ensure_ascii=False, indent=1)
+        chain_servers = chain.load_optional_servers()
+        cfg = json.dumps(
+            build_config(self.s, self.servers, self.clash.secret,
+                         chain_servers=chain_servers, chain_on=chain.enabled()),
+            ensure_ascii=False, indent=1,
+        )
         old = None
         if os.path.exists(BOX_CONFIG):
             with open(BOX_CONFIG) as f:
