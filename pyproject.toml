@@ -13,9 +13,14 @@ dependencies = []
 classifiers = [
   "Environment :: No Input/Output (Daemon)",
   "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Topic :: Internet :: Proxy Servers",
 ]
+
+[project.optional-dependencies]
+ui = ["pywebview>=5.0", "pystray>=0.19", "Pillow>=10.0"]
 
 [project.scripts]
 kvn = "kvn.cli:main"

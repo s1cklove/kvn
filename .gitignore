@@ -6,5 +6,6 @@ dist/
 result
 result-*
 .venv/
-# never commit a subscription
+# never commit a subscription or exit credentials
 sub_url
+chain_url

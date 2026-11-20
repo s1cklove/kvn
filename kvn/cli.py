@@ -1,5 +1,6 @@
 """Command line. Commands map to what you want when something is off:
 
+  init            interactive first-run setup (subscription URL + validation)
   status          is it running, does the proxy work, which server, how old is the subscription
   connect         re-test all servers now and switch to the best one
   use             pin one server by hand, or `use auto` to hand control back to the watchdog
@@ -7,47 +8,90 @@
   chain           show / toggle / validate the optional chain exit layer (e.g. personal VPS)
   fetch           download the subscription now and apply it
   start/stop/restart
-                  control the background service (systemd user unit)
+                  control the background service
+  install/uninstall
+                  register or remove autostart on login (Linux/macOS/Windows)
   logs            follow the service log
   servers         every server with its last measured delay
   run             the daemon itself (what the service runs)
 """
 
 import argparse
+import getpass
 import json
 import logging
 import os
 import re
-import shutil
 import signal
-import subprocess
 import sys
 import time
 
-from . import __version__, chain, master
+from . import __version__, api, chain, master
 from .clash import Clash, top_list
 from .daemon import Watchdog
 from .net import probe
+from .platform import (
+    is_pid_alive, mkdir_private, service_control, service_install, service_uninstall, show_logs,
+)
 from .settings import (
-    CHAIN_URL_FILE, PID_FILE, SERVERS_FILE, STATE_DIR, SUB_URL_FILE, get_secret, load_settings, load_sub_meta,
-    save_servers, write_atomic,
+    CHAIN_URL_FILE, LOG_FILE, PID_FILE, SERVERS_FILE, STATE_DIR, SUB_URL_FILE,
+    get_secret, load_settings, load_sub_meta, save_servers, write_atomic,
 )
 from .singbox import build_config, check_config
 from .subscription import fetch_subscription, subscription_expiry
-
-SERVICE = "kvn"
 
 
 # ---------------------------------------------------------------- helpers
 
 def daemon_pid():
     try:
-        with open(PID_FILE) as f:
-            pid = int(f.read())
-        os.kill(pid, 0)
-        return pid
+        with open(PID_FILE, encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        return pid if is_pid_alive(pid) else None
     except (OSError, ValueError):
         return None
+
+
+def api_addr(settings):
+    port = settings.get("api_port")
+    if not port:
+        return None
+    host = settings.get("api_listen") or settings["listen"]
+    return f"{host}:{port}"
+
+
+def notify_daemon_reload(settings, pid):
+    addr = api_addr(settings)
+    if addr:
+        try:
+            api.api_request(addr, get_secret(), "POST", "/reload", timeout=5)
+            return True
+        except OSError:
+            pass
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None and pid:
+        try:
+            os.kill(pid, sighup)
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def stop_daemon_gracefully(settings):
+    addr = api_addr(settings)
+    if addr:
+        try:
+            api.api_request(addr, get_secret(), "POST", "/stop", timeout=5)
+            return
+        except OSError:
+            pass
+    pid = daemon_pid()
+    if pid and hasattr(signal, "SIGTERM"):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def clash_for(settings):
@@ -76,16 +120,53 @@ def fail(msg, hint=None):
     return 1
 
 
-def systemctl(*args):
-    if not shutil.which("systemctl"):
-        raise OSError("systemctl not found; run `kvn run` under your own supervisor")
-    return subprocess.run(["systemctl", "--user", *args], check=False)
-
-
 # ---------------------------------------------------------------- commands
 
 def cmd_status(settings, args):
     pid = daemon_pid()
+    if getattr(args, "json", False):
+        data = {
+            "running": bool(pid),
+            "pid": pid,
+            "listen": settings["listen"],
+            "port": settings["port"],
+            "proxy_ok": False,
+            "server": None,
+            "delay_ms": 0,
+            "mode": None,
+            "chain": {"configured": chain.configured(), "enabled": chain.enabled(), "port": settings.get("chain_port")},
+            "subscription": load_sub_meta(),
+        }
+        if pid:
+            data["proxy_ok"] = probe(settings["probe_urls"], proxy_url(settings))
+            try:
+                clash = clash_for(settings)
+                sel = clash.selector().get("now")
+                if sel and sel != "auto":
+                    data["mode"] = "pinned"
+                    data["server"] = sel
+                    data["delay_ms"] = clash.last_delay(sel)
+                else:
+                    auto_sel = clash.auto_selected()
+                    now = clash.current()
+                    data["mode"] = "master" if auto_sel != "fastest" else "auto"
+                    data["server"] = now
+                    data["delay_ms"] = clash.last_delay(now) if now else 0
+                if chain.configured():
+                    try:
+                        c_now = clash.chain_current()
+                    except OSError:
+                        c_now = None
+                    data["chain"]["active"] = chain.display_tag(c_now) if c_now else None
+                    if c_now:
+                        ms = chain.probe_latency(settings["probe_urls"], chain.chain_proxy_url(settings))
+                        data["chain"]["works"] = ms is not None
+                        data["chain"]["latency_ms"] = ms
+            except OSError:
+                pass
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
     print(f"service       {'running (pid %d)' % pid if pid else 'not running  → kvn start'}")
 
     if pid:
@@ -172,21 +253,6 @@ def cmd_connect(settings, args):
     return 0
 
 
-def resolve_server(name, members):
-    """Map a user-typed name onto a selector member.
-
-    Exact match wins; otherwise a unique case-insensitive substring (names carry
-    flags and spaces, so typing `nl` or `tokyo` is enough). Returns the tag, None
-    when nothing matches, or the list of candidates when it's ambiguous.
-    """
-    if name in members:
-        return name
-    hits = [m for m in members if name.lower() in m.lower()]
-    if len(hits) == 1:
-        return hits[0]
-    return hits or None
-
-
 def cmd_use(settings, args):
     """Pin routing to one server, or 'auto' to hand control back to the watchdog."""
     if not daemon_pid():
@@ -196,7 +262,7 @@ def cmd_use(settings, args):
         members = clash.selector().get("all", [])
     except OSError as e:
         return fail(f"sing-box is not answering ({e})", "try: kvn restart")
-    target = resolve_server(args.server, members)
+    target = api.resolve_server(args.server, members)
     if target is None:
         return fail(f"no server matches {args.server!r}", "see the names: kvn servers")
     if isinstance(target, list):
@@ -245,7 +311,7 @@ def cmd_fetch(settings, args):
             mark = "  (excluded)" if exclude and exclude.search(s["tag"]) else ""
             print(f"  {kind:<7} {s.get('transport', {}).get('type', 'tcp'):<11} {s['tag']}{mark}")
 
-    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    mkdir_private(STATE_DIR)
     path = os.path.join(STATE_DIR, "config.check.json")
     cfg = build_config(settings, servers, "check",
                        chain_servers=chain.load_optional_servers(), chain_on=chain.enabled())
@@ -261,21 +327,75 @@ def cmd_fetch(settings, args):
     save_servers(servers, via, exp)
     pid = daemon_pid()
     if pid:
-        os.kill(pid, signal.SIGHUP)
-        print("applied, the service is re-testing servers now; check with: kvn status")
+        if notify_daemon_reload(settings, pid):
+            print("applied, the service is re-testing servers now; check with: kvn status")
+        else:
+            print("saved; restart the service to apply: kvn restart")
     else:
         print("saved; the service is not running → kvn start")
+    return 0
+
+
+def cmd_init(settings, args):
+    """Interactive first-run setup: save subscription URL and validate everything."""
+    print(f"kvn {__version__} setup\n")
+    sub_url = args.sub_url
+    if not sub_url:
+        if os.path.exists(SUB_URL_FILE):
+            print(f"existing subscription URL found in {SUB_URL_FILE}")
+            ans = input("replace it? [y/N]: ").strip().lower()
+            if ans not in ("y", "yes"):
+                sub_url = None
+            else:
+                sub_url = getpass.getpass("subscription URL (hidden): ").strip()
+        else:
+            sub_url = getpass.getpass("subscription URL (hidden): ").strip()
+    if sub_url:
+        if "://" not in sub_url:
+            return fail("subscription URL should start with https:// or http://")
+        write_atomic(SUB_URL_FILE, sub_url + "\n", 0o600)
+        print(f"saved subscription URL to {SUB_URL_FILE}")
+    elif not os.path.exists(SUB_URL_FILE):
+        return fail("no subscription URL provided")
+
+    print("fetching and validating subscription…")
+    fetch_args = argparse.Namespace(dry_run=False, verbose=False)
+    rc = cmd_fetch(settings, fetch_args)
+    if rc != 0:
+        return rc
+
+    print(f"\nproxy address: http://{settings['listen']}:{settings['port']} (mixed HTTP/SOCKS5)")
+    print("next steps:")
+    print("  1. kvn install   # optional: auto-start on login")
+    print("  2. kvn start     # start the proxy in the background")
+    print("  3. point your browser (FoxyProxy) or Telegram SOCKS5 to 127.0.0.1:%d" % settings["port"])
+    return 0
+
+
+def cmd_install(settings, args):
+    try:
+        msg = service_install(LOG_FILE)
+    except (OSError, Exception) as e:
+        return fail(str(e))
+    print(msg)
+    return 0
+
+
+def cmd_uninstall(settings, args):
+    try:
+        msg = service_uninstall()
+    except OSError as e:
+        return fail(str(e))
+    print(msg)
     return 0
 
 
 def service_cmd(action):
     def run(settings, args):
         try:
-            r = systemctl(action, SERVICE)
+            service_control(action, stop_fn=lambda: stop_daemon_gracefully(settings), pid_fn=daemon_pid)
         except OSError as e:
-            return fail(str(e))
-        if r.returncode != 0:
-            return fail(f"systemctl --user {action} {SERVICE} failed", "see: kvn logs")
+            return fail(str(e), "see: kvn logs")
         if action == "stop":
             print("stopped; the proxy is down until: kvn start")
             return 0
@@ -293,15 +413,10 @@ def service_cmd(action):
 
 
 def cmd_logs(settings, args):
-    if not shutil.which("journalctl"):
-        return fail("journalctl not found")
-    cmd = ["journalctl", "--user", "-u", SERVICE, "-n", str(args.lines)]
-    if not args.no_follow:
-        cmd.append("-f")
     try:
-        return subprocess.run(cmd).returncode
-    except KeyboardInterrupt:
-        return 0
+        return show_logs(LOG_FILE, lines=args.lines, follow=not args.no_follow)
+    except OSError as e:
+        return fail(str(e))
 
 
 def cmd_servers(settings, args):
@@ -315,7 +430,16 @@ def cmd_servers(settings, args):
         routed = clash.current()
     except OSError as e:
         return fail(f"sing-box is not answering ({e})", "try: kvn restart")
-    for tag, d in sorted(delays.items(), key=lambda kv: (kv[1] <= 0, kv[1])):
+    ordered = sorted(delays.items(), key=lambda kv: (kv[1] <= 0, kv[1]))
+    if getattr(args, "json", False):
+        mode = "pinned" if (sel and sel != "auto") else ("master" if auto_sel != "fastest" else "auto")
+        print(json.dumps({
+            "current": routed,
+            "mode": mode,
+            "servers": [{"tag": t, "delay_ms": d, "alive": d > 0, "active": t == routed} for t, d in ordered],
+        }, ensure_ascii=False, indent=2))
+        return 0
+    for tag, d in ordered:
         print(f"{'*' if tag == routed else ' '} {d if d > 0 else 'dead':>6}  {tag}")
     if sel and sel != "auto":
         print(f"\npinned to {sel}  → kvn use auto")
@@ -484,7 +608,10 @@ def main(argv=None):
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="command")
 
-    sub.add_parser("status", help="is it running, does the proxy work, current server, subscription age")
+    ini = sub.add_parser("init", help="interactive first-run setup (save subscription URL and validate)")
+    ini.add_argument("--sub-url", help="subscription URL (if omitted, prompted without echo)")
+    st = sub.add_parser("status", help="is it running, does the proxy work, current server, subscription age")
+    st.add_argument("--json", action="store_true", help="output status as JSON")
     sub.add_parser("connect", help="re-test all servers now and switch to the best one")
     u = sub.add_parser("use", help="pin routing to one server, or 'auto' for fastest-server autopilot")
     u.add_argument("server", metavar="SERVER|auto", help="server name (a substring is enough) or 'auto'")
@@ -498,17 +625,21 @@ def main(argv=None):
     sub.add_parser("start", help="start the background service")
     sub.add_parser("stop", help="stop the service (the proxy goes down)")
     sub.add_parser("restart", help="restart the service and sing-box")
+    sub.add_parser("install", help="register autostart on login (systemd / launchd / Windows Task Scheduler)")
+    sub.add_parser("uninstall", help="remove autostart registration")
     lg = sub.add_parser("logs", help="follow the service log")
     lg.add_argument("-n", "--lines", type=int, default=50)
     lg.add_argument("--no-follow", action="store_true")
-    sub.add_parser("servers", help="every server with its last measured delay")
+    srv = sub.add_parser("servers", help="every server with its last measured delay")
+    srv.add_argument("--json", action="store_true", help="output servers as JSON")
     sub.add_parser("run", help="run the daemon in the foreground (what the service runs)")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stderr)
     handlers = {
-        "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master, "chain": cmd_chain,
-        "fetch": cmd_fetch, "logs": cmd_logs, "servers": cmd_servers, "run": cmd_run,
+        "init": cmd_init, "status": cmd_status, "connect": cmd_connect, "use": cmd_use, "master": cmd_master,
+        "chain": cmd_chain, "fetch": cmd_fetch, "logs": cmd_logs, "servers": cmd_servers, "run": cmd_run,
+        "install": cmd_install, "uninstall": cmd_uninstall,
         "start": service_cmd("start"), "stop": service_cmd("stop"), "restart": service_cmd("restart"),
     }
     try:

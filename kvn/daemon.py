@@ -1,5 +1,6 @@
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import socket
@@ -7,13 +8,16 @@ import subprocess
 import threading
 import time
 
-from . import chain, master
+from . import api, chain, master
 from .clash import Clash, top_list
-from .net import probe
+from .net import http_get, probe
 from .notify import notify
-from .settings import BOX_CONFIG, PID_FILE, RULES_DIR, SERVERS_FILE, SING_BOX, STATE_DIR, get_secret, save_servers, write_atomic
+from .platform import mkdir_private, popen_kwargs, running_under_systemd
+from .settings import (
+    BOX_CONFIG, LOG_FILE, PID_FILE, RULES_DIR, SERVERS_FILE, SING_BOX, STATE_DIR,
+    get_secret, load_settings, save_servers, write_atomic,
+)
 from .singbox import build_config, check_config
-from .net import http_get
 from .subscription import fetch_subscription, servers_digest, subscription_expiry
 
 log = logging.getLogger("kvn")
@@ -25,6 +29,8 @@ class Watchdog:
         self.proxy = f"http://{settings['listen']}:{settings['port']}"
         self.clash = Clash(settings["clash_api"], get_secret())
         self.box = None
+        self.api_server = None
+        self.ring_log = api.RingLogHandler(capacity=500)
         self.servers = []
         self.state = "init"          # init | up | down | offline
         self.fails = 0
@@ -65,7 +71,10 @@ class Watchdog:
                        "critical", "network-vpn-disconnected")
                 self.box_error_notified = True
             return False
-        self.box = subprocess.Popen([SING_BOX, "run", "--disable-color", "-c", BOX_CONFIG, "-D", STATE_DIR])
+        self.box = subprocess.Popen(
+            [SING_BOX, "run", "--disable-color", "-c", BOX_CONFIG, "-D", STATE_DIR],
+            **popen_kwargs(),
+        )
         for _ in range(50):
             if self.box.poll() is not None:
                 break
@@ -295,20 +304,45 @@ class Watchdog:
 
     # -- main loop
 
+    def _setup_logging(self):
+        root = logging.getLogger()
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
+        self.ring_log.setFormatter(fmt)
+        root.addHandler(self.ring_log)
+        if not running_under_systemd():
+            mkdir_private(STATE_DIR)
+            fh = RotatingFileHandler(LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8")
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+
     def run(self):
         try:
             self._run()
         finally:
+            if self.api_server:
+                try:
+                    self.api_server.shutdown()
+                    self.api_server.server_close()
+                except OSError:
+                    pass
+                self.api_server = None
             self.stop_box()
 
     def _run(self):
-        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        mkdir_private(STATE_DIR)
+        self._setup_logging()
         write_atomic(PID_FILE, str(os.getpid()), 0o644)
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, self.on_stop)
-        signal.signal(signal.SIGUSR1, self.on_usr1)
-        signal.signal(signal.SIGHUP, self.on_hup)
+        for sig_name, handler in (
+            ("SIGTERM", self.on_stop),
+            ("SIGINT", self.on_stop),
+            ("SIGUSR1", self.on_usr1),
+            ("SIGHUP", self.on_hup),
+        ):
+            sig = getattr(signal, sig_name, None)
+            if sig is not None:
+                signal.signal(sig, handler)
 
+        self.api_server = api.start_api_server(self, self.ring_log)
         self.load_cached_servers()
         while not self.stop and not self.servers:
             self.refresh_subscription()
@@ -316,6 +350,7 @@ class Watchdog:
                 notify("Can't download the subscription", "No saved servers to fall back on. Retrying in a minute.",
                        "critical", "network-vpn-disconnected")
                 self.wake.wait(60)
+                self.wake.clear()
         self.next_sub = time.time() + self.s["sub_interval"]
         if not self.stop:
             self.apply_config()
@@ -332,9 +367,11 @@ class Watchdog:
 
             now = time.time()
             if self.reload:
-                # `kvn fetch` saved a fresh server list; pick it up and re-test right away.
+                # `kvn fetch` or API saved a fresh server list / config; pick it up right away.
                 self.reload = False
-                log.info("reloading servers fetched by the CLI")
+                log.info("reloading configuration and servers")
+                self.s = load_settings()
+                self.proxy = f"http://{self.s['listen']}:{self.s['port']}"
                 self.load_cached_servers()
                 self.next_sub = now + self.s["sub_interval"]
                 self.apply_config()

@@ -12,10 +12,14 @@ import os
 import secrets
 import time
 
+from .platform import chmod_secret, find_sing_box, mkdir_private, paths
+
 DEFAULTS = {
     "listen": "127.0.0.1",
     "port": 10808,
     "clash_api": "127.0.0.1:9095",
+    "api_listen": "127.0.0.1",
+    "api_port": 9096,
     # Some panels hand out different formats per client; v2rayN gets plain links.
     "user_agent": "v2rayN/7.10",
     "sub_interval": 3 * 3600,
@@ -54,11 +58,9 @@ DEFAULTS = {
     "chain_via": "chain",
     "chain_port": None,
 }
-SING_BOX = os.environ.get("KVN_SING_BOX", "sing-box")
+SING_BOX = find_sing_box()
 NOTIFY_SEND = os.environ.get("KVN_NOTIFY_SEND", "notify-send")
-CONF_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "kvn")
-STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "kvn")
-RUN_DIR = os.environ.get("XDG_RUNTIME_DIR", STATE_DIR)
+CONF_DIR, STATE_DIR, RUN_DIR = paths()
 SUB_URL_FILE = os.path.join(CONF_DIR, "sub_url")
 CHAIN_URL_FILE = os.path.join(CONF_DIR, "chain_url")
 SERVERS_FILE = os.path.join(STATE_DIR, "servers.json")
@@ -72,23 +74,24 @@ MASTER_OFF_FILE = os.path.join(STATE_DIR, "master_off")
 #: exists while `kvn chain off` is in effect
 CHAIN_OFF_FILE = os.path.join(STATE_DIR, "chain_off")
 PID_FILE = os.path.join(RUN_DIR, "kvn.pid")
+LOG_FILE = os.path.join(STATE_DIR, "kvn.log")
 
 
 def load_settings():
     s = dict(DEFAULTS)
     path = os.path.join(CONF_DIR, "config.json")
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             s.update(json.load(f))
     return s
 
 
 def write_atomic(path, data, mode=0o600):
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    mkdir_private(os.path.dirname(path))
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        f.write(data if isinstance(data, bytes) else data.encode())
-    os.chmod(tmp, mode)
+        f.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+    chmod_secret(tmp, mode)
     os.replace(tmp, path)
 
 

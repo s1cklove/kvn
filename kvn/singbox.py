@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 
+from .platform import popen_kwargs
 from .settings import RULES_DIR, SING_BOX
 
 
@@ -102,5 +103,5 @@ def build_config(settings, servers, secret, chain_servers=None, chain_on=True):
 
 
 def check_config(path):
-    r = subprocess.run([SING_BOX, "check", "-c", path], capture_output=True, text=True)
+    r = subprocess.run([SING_BOX, "check", "-c", path], capture_output=True, text=True, **popen_kwargs())
     return r.returncode == 0, (r.stderr or r.stdout).strip()
