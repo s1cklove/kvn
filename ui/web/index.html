@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KVN Connect</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot" id="hdr-dot"></span>
+        <span class="title">KVN Connect</span>
+        <span class="ver" id="hdr-ver"></span>
+      </div>
+      <div class="pill-state" id="hdr-state">Loading…</div>
+    </header>
+
+    <main class="content">
+      <!-- STATUS VIEW -->
+      <section class="view active" id="view-status">
+        <div class="card hero">
+          <div class="hero-main">
+            <div class="orb" id="status-orb"></div>
+            <div>
+              <div class="hero-title" id="hero-title">Checking…</div>
+              <div class="hero-sub" id="hero-sub">—</div>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button class="btn primary" id="btn-power">Start</button>
+            <button class="btn" id="btn-reconnect">Reconnect</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Route</div>
+          <div class="route-box" id="route-box">Not connected</div>
+          <div class="ports-row" id="ports-row"></div>
+        </div>
+
+        <div class="card toggles">
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-label">Prefer master server</div>
+              <div class="toggle-desc" id="master-desc">—</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-master" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="toggle-row" id="chain-row">
+            <div>
+              <div class="toggle-label">Chain exit layer</div>
+              <div class="toggle-desc" id="chain-desc">Not configured</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-chain" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card sub-card">
+          <div class="sub-info">
+            <div class="card-title">Subscription</div>
+            <div class="muted" id="sub-meta">—</div>
+          </div>
+          <button class="btn small" id="btn-fetch">Refresh</button>
+        </div>
+      </section>
+
+      <!-- SERVERS VIEW -->
+      <section class="view" id="view-servers">
+        <div class="toolbar">
+          <input type="search" id="srv-search" class="input" placeholder="Filter servers…" />
+          <button class="btn small" id="btn-use-auto">Auto</button>
+          <button class="btn small" id="btn-srv-test">Re-test</button>
+        </div>
+        <div class="server-list" id="server-list">
+          <div class="empty">Start kvn to see servers.</div>
+        </div>
+      </section>
+
+      <!-- SETTINGS VIEW -->
+      <section class="view" id="view-settings">
+        <div class="banner hidden" id="managed-banner">
+          config.json is managed externally (e.g. NixOS Home Manager). You can still update secret URLs and live toggles.
+        </div>
+
+        <div class="card form-card">
+          <div class="card-title">Secrets</div>
+          <label class="field">
+            <span>Subscription URL <em id="sub-badge" class="badge"></em></span>
+            <input type="password" id="in-sub-url" class="input" placeholder="Paste https://… to set or replace" />
+          </label>
+          <label class="field">
+            <span>Chain exit link(s) <em id="chain-badge" class="badge"></em></span>
+            <textarea id="in-chain-url" class="input textarea" rows="2" placeholder="Optional: ss://… or vless://… (leave blank to keep, enter 'CLEAR' to remove)"></textarea>
+          </label>
+        </div>
+
+        <div class="card form-card" id="settings-fields">
+          <div class="card-title">Proxy &amp; Routing</div>
+          <div class="grid-2">
+            <label class="field">
+              <span>Main port</span>
+              <input type="number" id="in-port" class="input" />
+            </label>
+            <label class="field">
+              <span>Chain port (optional)</span>
+              <input type="number" id="in-chain-port" class="input" placeholder="shared" />
+            </label>
+          </div>
+          <div class="grid-2">
+            <label class="field">
+              <span>Chain mode</span>
+              <select id="in-chain-via" class="input">
+                <option value="chain">chain (via subscription)</option>
+                <option value="auto">auto (direct or chained)</option>
+                <option value="direct">direct</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Master regex</span>
+              <input type="text" id="in-master" class="input" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Exclude regex</span>
+            <input type="text" id="in-exclude" class="input" />
+          </label>
+          <div class="checks-row">
+            <label class="check"><input type="checkbox" id="in-bypass-ru" /> Bypass Russia (.ru / GeoIP)</label>
+            <label class="check"><input type="checkbox" id="in-notify" /> Switch notifications</label>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn primary" id="btn-save-cfg">Save &amp; Apply</button>
+          <button class="btn" id="btn-install">Enable Autostart</button>
+          <button class="btn" id="btn-uninstall">Disable Autostart</button>
+        </div>
+
+        <div class="card guide-card">
+          <div class="card-title">Connect your apps (local proxy only)</div>
+          <p class="muted">kvn never changes OS system proxy settings. Point only the apps you want:</p>
+          <ul class="guide-list">
+            <li><strong>Telegram:</strong> Settings → Advanced → Connection type → SOCKS5 → <code id="guide-port">127.0.0.1:10808</code></li>
+            <li><strong>Browser (FoxyProxy):</strong> HTTP or SOCKS5 proxy → <code id="guide-port-2">127.0.0.1:10808</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- LOGS VIEW -->
+      <section class="view" id="view-logs">
+        <div class="toolbar">
+          <span class="card-title" style="margin:0">Daemon Logs</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn small" id="btn-logs-refresh">Refresh</button>
+            <button class="btn small" id="btn-logs-copy">Copy</button>
+          </div>
+        </div>
+        <pre class="log-box" id="log-box">No logs yet.</pre>
+      </section>
+    </main>
+
+    <div class="toast hidden" id="toast"></div>
+
+    <nav class="tabbar">
+      <button class="tab active" data-tab="status">Status</button>
+      <button class="tab" data-tab="servers">Servers</button>
+      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab" data-tab="logs">Logs</button>
+    </nav>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

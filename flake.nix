@@ -11,6 +11,7 @@
     {
       packages = forAll (pkgs: rec {
         kvn = pkgs.callPackage ./nix/package.nix { };
+        kvn-ui = pkgs.callPackage ./nix/ui-package.nix { inherit kvn; };
         default = kvn;
       });
 
