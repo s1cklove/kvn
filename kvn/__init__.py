@@ -6,4 +6,4 @@ dies, refreshes the subscription, re-tests every server and lets urltest
 switch to the fastest one. Desktop notifications go through notify-send.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
